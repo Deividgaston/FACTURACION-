@@ -1,0 +1,5 @@
+{
+  "name": "SwiftInvoice - Recurrent Billing Pro",
+  "description": "A high-performance invoice management system designed for recurring services, rentals, and classes with multi-language PDF support (ES/EN) and Firebase backend.",
+  "requestFramePermissions": []
+}

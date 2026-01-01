@@ -11,27 +11,45 @@ import { Menu, X, PlusCircle, LogOut } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { auth } from './lib/firebase';
+
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
+
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [editingInvoiceId, setEditingInvoiceId] = useState<string | null>(null);
 
   useEffect(() => {
-    const session = sessionStorage.getItem('si_session');
-    if (session === 'active') {
-      setIsAuthenticated(true);
-    }
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setIsAuthenticated(!!user);
+      setAuthReady(true);
+    });
+    return () => unsub();
   }, []);
 
-  const handleLogout = () => {
-    sessionStorage.removeItem('si_session');
-    setIsAuthenticated(false);
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } finally {
+      setIsAuthenticated(false);
+    }
   };
+
+  // Evita parpadeo: esperamos a que Firebase diga si hay sesión o no
+  if (!authReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-900 text-slate-200">
+        Cargando...
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return <Login onAuthenticated={() => setIsAuthenticated(true)} />;

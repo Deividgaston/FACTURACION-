@@ -16,7 +16,7 @@ import {
   type QueryDocumentSnapshot,
   type DocumentData
 } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db } from './firebase';
 
 const STORAGE_KEYS = {
   INVOICES: 'si_invoices', // legacy local cache / migration

@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Save, Shield, Briefcase, Key, LogOut, Plus, Trash2, Check } from 'lucide-react';
+import { Save, Shield, Briefcase, LogOut, Plus, Trash2, Check, Mail } from 'lucide-react';
 import { store } from '../lib/store';
 import { Issuer } from '../types';
+import { auth } from '../lib/firebase';
+import { sendPasswordResetEmail } from 'firebase/auth';
 
 interface SettingsViewProps {
   onLogout?: () => void;
@@ -20,8 +22,9 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
   const [activeId, setActiveId] = useState<string>('');
   const [editing, setEditing] = useState<Issuer | null>(null);
   const [newIssuer, setNewIssuer] = useState<Omit<Issuer, 'id'>>(emptyIssuer());
-  const [newPass, setNewPass] = useState('');
-  const [passChanged, setPassChanged] = useState(false);
+
+  const [resetSent, setResetSent] = useState(false);
+  const [resetError, setResetError] = useState<string>('');
 
   // ---- Load once
   useEffect(() => {
@@ -65,13 +68,24 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
     refreshIssuers();
   };
 
-  // ---- Password
-  const handleChangePass = () => {
-    if (newPass.length < 4) return alert('La contraseña debe tener al menos 4 caracteres');
-    localStorage.setItem('si_master_password', btoa(newPass));
-    setPassChanged(true);
-    setTimeout(() => setPassChanged(false), 3000);
-    setNewPass('');
+  // ---- Firebase password reset (real)
+  const handlePasswordReset = async () => {
+    setResetSent(false);
+    setResetError('');
+
+    const userEmail = auth.currentUser?.email;
+    if (!userEmail) {
+      setResetError('No hay email en la sesión actual.');
+      return;
+    }
+
+    try {
+      await sendPasswordResetEmail(auth, userEmail);
+      setResetSent(true);
+      setTimeout(() => setResetSent(false), 4000);
+    } catch (e: any) {
+      setResetError('No se pudo enviar el email de cambio de contraseña.');
+    }
   };
 
   return (
@@ -171,14 +185,35 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
           <div className="bg-white rounded-2xl p-6 w-full max-w-md space-y-4">
             <h3 className="font-bold text-lg">Editar emisor</h3>
 
-            <input className="input" value={editing.alias || ''} onChange={(e) => setEditing({ ...editing, alias: e.target.value })} />
-            <input className="input" value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
-            <input className="input" value={editing.taxId} onChange={(e) => setEditing({ ...editing, taxId: e.target.value })} />
-            <input className="input" value={editing.email} onChange={(e) => setEditing({ ...editing, email: e.target.value })} />
+            <input
+              className="input"
+              value={editing.alias || ''}
+              onChange={(e) => setEditing({ ...editing, alias: e.target.value })}
+            />
+            <input
+              className="input"
+              value={editing.name}
+              onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+            />
+            <input
+              className="input"
+              value={editing.taxId}
+              onChange={(e) => setEditing({ ...editing, taxId: e.target.value })}
+            />
+            <input
+              className="input"
+              value={editing.email}
+              onChange={(e) => setEditing({ ...editing, email: e.target.value })}
+            />
 
             <div className="flex justify-end gap-2">
-              <button onClick={() => setEditing(null)} className="px-4 py-2 rounded-xl bg-slate-200">Cancelar</button>
-              <button onClick={saveIssuer} className="px-4 py-2 rounded-xl bg-indigo-600 text-white flex gap-1 items-center">
+              <button onClick={() => setEditing(null)} className="px-4 py-2 rounded-xl bg-slate-200">
+                Cancelar
+              </button>
+              <button
+                onClick={saveIssuer}
+                className="px-4 py-2 rounded-xl bg-indigo-600 text-white flex gap-1 items-center"
+              >
                 <Save size={16} /> Guardar
               </button>
             </div>
@@ -192,22 +227,19 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
           <Shield className="text-indigo-600" /> Seguridad
         </h2>
 
-        <input
-          type="password"
-          placeholder="Nueva contraseña"
-          value={newPass}
-          onChange={(e) => setNewPass(e.target.value)}
-          className="input"
-        />
+        <div className="text-sm text-slate-500">
+          Sesión actual: <span className="font-semibold text-slate-700">{auth.currentUser?.email || '-'}</span>
+        </div>
 
         <button
-          onClick={handleChangePass}
-          className="bg-slate-900 text-white px-6 py-3 rounded-xl font-bold"
+          onClick={handlePasswordReset}
+          className="bg-slate-900 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2"
         >
-          Actualizar contraseña
+          <Mail size={16} /> Enviar email para cambiar contraseña
         </button>
 
-        {passChanged && <p className="text-green-600 text-sm font-bold">✓ Contraseña actualizada</p>}
+        {resetSent && <p className="text-green-600 text-sm font-bold">✓ Email enviado.</p>}
+        {resetError && <p className="text-red-600 text-sm font-bold">{resetError}</p>}
 
         <button
           onClick={onLogout}

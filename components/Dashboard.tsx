@@ -1,7 +1,8 @@
-
-import React, { useMemo } from 'react';
+import React, { useMemo, useEffect, useState } from 'react';
 import { TrendingUp, Clock, CheckCircle, AlertCircle, ArrowUpRight } from 'lucide-react';
 import { store } from '../lib/store';
+import { auth } from '../lib/firebase';
+import { Invoice } from '../types';
 
 interface DashboardProps {
   onNewInvoice: () => void;
@@ -9,13 +10,34 @@ interface DashboardProps {
 }
 
 const Dashboard: React.FC<DashboardProps> = ({ onNewInvoice, onEditInvoice }) => {
-  const invoices = useMemo(() => store.getInvoices(), []);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+
+  // 1 query por pantalla (y si ya está cacheado, 0 lecturas)
+  useEffect(() => {
+    let alive = true;
+
+    const run = async () => {
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
+
+      const list = await store.loadInvoicesOnce(uid);
+      if (alive) setInvoices(list);
+    };
+
+    run();
+
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const stats = useMemo(() => {
     const totalInvoiced = invoices.filter(i => i.status !== 'CANCELLED').reduce((acc, i) => acc + i.total, 0);
     const pending = invoices.filter(i => i.status === 'ISSUED').reduce((acc, i) => acc + i.total, 0);
     const paid = invoices.filter(i => i.status === 'PAID').reduce((acc, i) => acc + i.total, 0);
-    const overdue = invoices.filter(i => i.status === 'ISSUED' && new Date(i.dueDate) < new Date()).reduce((acc, i) => acc + i.total, 0);
+    const overdue = invoices
+      .filter(i => i.status === 'ISSUED' && new Date(i.dueDate) < new Date())
+      .reduce((acc, i) => acc + i.total, 0);
 
     return [
       { label: 'Facturado Total', value: `${totalInvoiced.toLocaleString()} €`, icon: <TrendingUp className="text-emerald-500" />, change: '+8%', color: 'bg-emerald-50' },
@@ -34,7 +56,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onNewInvoice, onEditInvoice }) =>
           <h1 className="text-3xl font-bold text-slate-800">Dashboard</h1>
           <p className="text-slate-500">Bienvenido a SwiftInvoice. Tienes {invoices.length} facturas registradas.</p>
         </div>
-        <button 
+        <button
           onClick={onNewInvoice}
           className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-semibold hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-100 flex items-center justify-center gap-2"
         >
@@ -99,9 +121,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onNewInvoice, onEditInvoice }) =>
 
         <div className="bg-indigo-900 rounded-3xl p-8 text-white relative overflow-hidden shadow-2xl flex flex-col justify-center">
           <h3 className="text-2xl font-bold mb-4 leading-tight">Proyecto para GitHub</h3>
-          <p className="text-indigo-200 mb-6">Esta aplicación usa LocalStorage para que puedas probarla sin necesidad de servidor.</p>
+          <p className="text-indigo-200 mb-6">Esta aplicación usa Firestore para persistencia real de facturas.</p>
           <div className="bg-indigo-800/50 p-4 rounded-2xl border border-indigo-700">
-            <p className="text-xs font-mono text-indigo-300">Stack: React 19 + Tailwind + Lucide + LocalStorage</p>
+            <p className="text-xs font-mono text-indigo-300">Stack: React + Tailwind + Lucide + Firebase</p>
           </div>
         </div>
       </div>

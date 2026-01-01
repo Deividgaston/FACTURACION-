@@ -1,17 +1,73 @@
-
-import React, { useState } from 'react';
-import { Save, Bell, Shield, Database, Briefcase, Key, LogOut } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Save, Shield, Briefcase, Key, LogOut, Plus, Trash2, Check } from 'lucide-react';
+import { store } from '../lib/store';
+import { Issuer } from '../types';
 
 interface SettingsViewProps {
   onLogout?: () => void;
 }
 
-const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
-  const [passChanged, setPassChanged] = useState(false);
-  const [newPass, setNewPass] = useState('');
+const emptyIssuer = (): Omit<Issuer, 'id'> => ({
+  alias: '',
+  name: '',
+  taxId: '',
+  email: '',
+  address: { street: '', city: '', zip: '', country: '' }
+});
 
+const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
+  const [issuers, setIssuers] = useState<Issuer[]>([]);
+  const [activeId, setActiveId] = useState<string>('');
+  const [editing, setEditing] = useState<Issuer | null>(null);
+  const [newIssuer, setNewIssuer] = useState<Omit<Issuer, 'id'>>(emptyIssuer());
+  const [newPass, setNewPass] = useState('');
+  const [passChanged, setPassChanged] = useState(false);
+
+  // ---- Load once
+  useEffect(() => {
+    const settings = store.getSettings();
+    setIssuers(settings.issuers);
+    setActiveId(settings.activeIssuerId);
+  }, []);
+
+  // ---- Issuers
+  const refreshIssuers = () => {
+    const s = store.getSettings();
+    setIssuers(s.issuers);
+    setActiveId(s.activeIssuerId);
+  };
+
+  const saveIssuer = () => {
+    if (!editing) return;
+    store.updateIssuer(editing);
+    setEditing(null);
+    refreshIssuers();
+  };
+
+  const addIssuer = () => {
+    if (!newIssuer.name || !newIssuer.taxId) {
+      alert('Nombre y NIF son obligatorios');
+      return;
+    }
+    store.addIssuer(newIssuer);
+    setNewIssuer(emptyIssuer());
+    refreshIssuers();
+  };
+
+  const deleteIssuer = (id: string) => {
+    if (!confirm('¿Eliminar este emisor?')) return;
+    store.deleteIssuer(id);
+    refreshIssuers();
+  };
+
+  const setActive = (id: string) => {
+    store.setActiveIssuer(id);
+    refreshIssuers();
+  };
+
+  // ---- Password
   const handleChangePass = () => {
-    if (newPass.length < 4) return alert('La contraseña debe tener 4 caracteres');
+    if (newPass.length < 4) return alert('La contraseña debe tener al menos 4 caracteres');
     localStorage.setItem('si_master_password', btoa(newPass));
     setPassChanged(true);
     setTimeout(() => setPassChanged(false), 3000);
@@ -19,98 +75,147 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
   };
 
   return (
-    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 max-w-3xl pb-20">
-      <div>
-        <h1 className="text-3xl font-bold text-slate-800">Ajustes</h1>
-        <p className="text-slate-500">Configura tus datos fiscales y seguridad de acceso.</p>
-      </div>
+    <div className="space-y-10 max-w-4xl pb-20 animate-in fade-in">
+      <header>
+        <h1 className="text-3xl font-bold text-slate-800">Ajustes del sistema</h1>
+        <p className="text-slate-500">Gestiona emisores, seguridad y sesión.</p>
+      </header>
 
-      <div className="grid gap-8">
-        {/* Fiscal Section */}
-        <section className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
-          <div className="p-6 bg-slate-50 border-b border-slate-100 flex items-center gap-3 text-slate-800">
-            <Briefcase size={20} className="text-indigo-600" />
-            <h2 className="font-bold">Datos del Emisor (Tus Datos)</h2>
-          </div>
-          <div className="p-8 space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-slate-600">Nombre o Razón Social</label>
-                <input type="text" defaultValue="Patricia de Pastor Mendez" className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none" />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-slate-600">NIF / CIF / VAT ID</label>
-                <input type="text" defaultValue="06010586L" className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none" />
-              </div>
-              <div className="col-span-full space-y-2">
-                <label className="text-sm font-semibold text-slate-600">Dirección Completa</label>
-                <input type="text" defaultValue="Calle Alcalde Sainz de Baranda 55, 6ºD" className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none" />
-              </div>
-            </div>
-            <button className="bg-indigo-600 text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all flex items-center gap-2">
-              <Save size={18} /> Guardar Datos Fiscales
-            </button>
-          </div>
-        </section>
+      {/* ISSUERS */}
+      <section className="bg-white rounded-3xl border shadow-sm">
+        <div className="p-6 border-b flex items-center gap-3">
+          <Briefcase className="text-indigo-600" />
+          <h2 className="font-bold">Emisores</h2>
+        </div>
 
-        {/* Security Section */}
-        <section className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
-          <div className="p-6 bg-slate-50 border-b border-slate-100 flex items-center gap-3 text-slate-800">
-            <Shield size={20} className="text-indigo-600" />
-            <h2 className="font-bold">Seguridad y Privacidad</h2>
-          </div>
-          <div className="p-8 space-y-6">
-            <div className="space-y-4">
-              <div className="flex flex-col md:flex-row md:items-end gap-4">
-                <div className="flex-1 space-y-2">
-                  <label className="text-sm font-semibold text-slate-600">Cambiar Contraseña Maestra</label>
-                  <div className="relative">
-                    <Key className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                    <input 
-                      type="password" 
-                      placeholder="Nueva contraseña" 
-                      value={newPass}
-                      onChange={(e) => setNewPass(e.target.value)}
-                      className="w-full px-4 py-3 pl-12 rounded-xl border border-slate-200 outline-none" 
-                    />
-                  </div>
-                </div>
-                <button 
-                  onClick={handleChangePass}
-                  className="bg-slate-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-slate-800 transition-all"
+        <div className="p-6 space-y-6">
+          {issuers.map((iss) => (
+            <div
+              key={iss.id}
+              className="border rounded-2xl p-4 flex flex-col md:flex-row gap-4 md:items-center justify-between"
+            >
+              <div>
+                <p className="font-bold">{iss.alias || iss.name}</p>
+                <p className="text-sm text-slate-500">{iss.taxId}</p>
+                {activeId === iss.id && (
+                  <span className="text-xs text-green-600 font-bold">Emisor activo</span>
+                )}
+              </div>
+
+              <div className="flex gap-2">
+                {activeId !== iss.id && (
+                  <button
+                    onClick={() => setActive(iss.id)}
+                    className="px-3 py-2 text-sm bg-green-600 text-white rounded-xl flex gap-1 items-center"
+                  >
+                    <Check size={14} /> Activar
+                  </button>
+                )}
+                <button
+                  onClick={() => setEditing({ ...iss })}
+                  className="px-3 py-2 text-sm bg-slate-200 rounded-xl"
                 >
-                  Actualizar Clave
+                  Editar
+                </button>
+                <button
+                  onClick={() => deleteIssuer(iss.id)}
+                  className="px-3 py-2 text-sm bg-red-100 text-red-700 rounded-xl"
+                >
+                  <Trash2 size={14} />
                 </button>
               </div>
-              {passChanged && <p className="text-green-600 font-bold text-xs">✓ Contraseña actualizada correctamente.</p>}
             </div>
+          ))}
 
-            <hr className="border-slate-50" />
+          {/* NEW ISSUER */}
+          <div className="border-t pt-6 space-y-4">
+            <h3 className="font-bold">Nuevo emisor</h3>
+            <input
+              placeholder="Alias (opcional)"
+              className="input"
+              value={newIssuer.alias}
+              onChange={(e) => setNewIssuer({ ...newIssuer, alias: e.target.value })}
+            />
+            <input
+              placeholder="Nombre / Razón social"
+              className="input"
+              value={newIssuer.name}
+              onChange={(e) => setNewIssuer({ ...newIssuer, name: e.target.value })}
+            />
+            <input
+              placeholder="NIF / CIF"
+              className="input"
+              value={newIssuer.taxId}
+              onChange={(e) => setNewIssuer({ ...newIssuer, taxId: e.target.value })}
+            />
+            <input
+              placeholder="Email"
+              className="input"
+              value={newIssuer.email}
+              onChange={(e) => setNewIssuer({ ...newIssuer, email: e.target.value })}
+            />
 
-            <div className="flex items-center justify-between p-4 bg-red-50 rounded-2xl border border-red-100">
-              <div>
-                <p className="font-bold text-red-800">Sesión Actual</p>
-                <p className="text-sm text-red-600/70">Cierra la sesión para bloquear el acceso de nuevo.</p>
-              </div>
-              <button 
-                onClick={onLogout}
-                className="flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-xl font-bold hover:bg-red-700 transition-all"
-              >
-                <LogOut size={18} /> Salir
+            <button
+              onClick={addIssuer}
+              className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2"
+            >
+              <Plus size={16} /> Añadir emisor
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {/* EDIT MODAL */}
+      {editing && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md space-y-4">
+            <h3 className="font-bold text-lg">Editar emisor</h3>
+
+            <input className="input" value={editing.alias || ''} onChange={(e) => setEditing({ ...editing, alias: e.target.value })} />
+            <input className="input" value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
+            <input className="input" value={editing.taxId} onChange={(e) => setEditing({ ...editing, taxId: e.target.value })} />
+            <input className="input" value={editing.email} onChange={(e) => setEditing({ ...editing, email: e.target.value })} />
+
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setEditing(null)} className="px-4 py-2 rounded-xl bg-slate-200">Cancelar</button>
+              <button onClick={saveIssuer} className="px-4 py-2 rounded-xl bg-indigo-600 text-white flex gap-1 items-center">
+                <Save size={16} /> Guardar
               </button>
             </div>
           </div>
-        </section>
-
-        {/* Info Box */}
-        <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-6 text-indigo-700 flex gap-4">
-            <Shield className="shrink-0 mt-1" />
-            <div className="text-sm">
-                <p className="font-bold mb-1">Sobre tu seguridad</p>
-                <p>Todos los datos se guardan exclusivamente en el navegador local de este dispositivo. No se envían a ningún servidor externo, asegurando tu total privacidad fiscal.</p>
-            </div>
         </div>
-      </div>
+      )}
+
+      {/* SECURITY */}
+      <section className="bg-white rounded-3xl border shadow-sm p-6 space-y-4">
+        <h2 className="font-bold flex items-center gap-2">
+          <Shield className="text-indigo-600" /> Seguridad
+        </h2>
+
+        <input
+          type="password"
+          placeholder="Nueva contraseña"
+          value={newPass}
+          onChange={(e) => setNewPass(e.target.value)}
+          className="input"
+        />
+
+        <button
+          onClick={handleChangePass}
+          className="bg-slate-900 text-white px-6 py-3 rounded-xl font-bold"
+        >
+          Actualizar contraseña
+        </button>
+
+        {passChanged && <p className="text-green-600 text-sm font-bold">✓ Contraseña actualizada</p>}
+
+        <button
+          onClick={onLogout}
+          className="mt-4 bg-red-600 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2"
+        >
+          <LogOut size={16} /> Cerrar sesión
+        </button>
+      </section>
     </div>
   );
 };

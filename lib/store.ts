@@ -1,7 +1,5 @@
 import { Invoice, Party, AppSettings, InvoiceTemplate, Issuer } from '../types';
 
-// 🔥 Firestore (modular SDK)
-// Ajusta la ruta según tu proyecto: por ejemplo '../firebase' o '../firebaseClient'
 import {
   collection,
   deleteDoc,
@@ -41,21 +39,16 @@ const DEFAULT_ISSUER: Issuer = {
 const DEFAULT_SETTINGS: AppSettings = {
   issuers: [DEFAULT_ISSUER],
   activeIssuerId: DEFAULT_ISSUER.id,
-
-  // legacy field intentionally omitted in defaults
   defaultCurrency: 'EUR',
   nextInvoiceNumber: 1,
   yearCounter: { [new Date().getFullYear()]: 1 }
 };
 
 function migrateSettings(raw: any): AppSettings {
-  // If already new format, just return
   if (raw && Array.isArray(raw.issuers) && typeof raw.activeIssuerId === 'string') {
-    // Ensure at least one issuer
     if (raw.issuers.length === 0) {
       return { ...raw, issuers: [DEFAULT_ISSUER], activeIssuerId: DEFAULT_ISSUER.id };
     }
-    // Ensure activeIssuerId exists
     const activeExists = raw.issuers.some((i: any) => i?.id === raw.activeIssuerId);
     if (!activeExists) {
       return { ...raw, activeIssuerId: raw.issuers[0].id };
@@ -63,7 +56,6 @@ function migrateSettings(raw: any): AppSettings {
     return raw as AppSettings;
   }
 
-  // Legacy format: issuerDefaults exists
   if (raw && raw.issuerDefaults) {
     const legacy: Party = raw.issuerDefaults;
     const migratedIssuer: Issuer = {
@@ -78,23 +70,15 @@ function migrateSettings(raw: any): AppSettings {
       defaultCurrency: raw.defaultCurrency || DEFAULT_SETTINGS.defaultCurrency,
       nextInvoiceNumber: raw.nextInvoiceNumber || DEFAULT_SETTINGS.nextInvoiceNumber,
       yearCounter: raw.yearCounter || DEFAULT_SETTINGS.yearCounter,
-      issuerDefaults: undefined // keep empty; field exists only for migration compatibility
+      issuerDefaults: undefined
     };
 
     return migrated;
   }
 
-  // Empty / unknown -> default
   return DEFAULT_SETTINGS;
 }
 
-/**
- * -----------------------------
- *  FASE 2: cache en memoria
- * -----------------------------
- * - 1 query por pantalla (listado): loadInvoicesOnce()
- * - editor: getInvoiceCached() -> 0 lecturas si está; si no, 1 getDoc
- */
 type InvoicesCacheKey = string; // `${uid}::${issuerId||'*'}`
 
 const _invoiceCache = {
@@ -106,10 +90,6 @@ const _invoiceCache = {
 
 const invoicesKey = (uid: string, issuerId?: string) => `${uid}::${issuerId || '*'}`;
 
-/**
- * Normaliza la factura para Firestore.
- * Añade metadatos mínimos para reglas de seguridad y ordenación.
- */
 function toFirestoreInvoice(uid: string, invoice: Invoice, issuerId?: string) {
   return {
     ...invoice,
@@ -121,20 +101,31 @@ function toFirestoreInvoice(uid: string, invoice: Invoice, issuerId?: string) {
 }
 
 function fromFirestoreInvoice(id: string, data: any): Invoice {
-  // Mantén el shape original de Invoice tal cual lo uses en UI
-  // y no dependas de timestamps Firestore para pintar.
   const { ownerUid, updatedAt, createdAt, ...rest } = data || {};
   return { id, ...rest } as Invoice;
+}
+
+/**
+ * Inserta un id al principio de una lista (sin duplicados)
+ */
+function unshiftUnique(list: string[], id: string) {
+  if (!list.includes(id)) return [id, ...list];
+  // si ya existe, lo movemos arriba
+  return [id, ...list.filter(x => x !== id)];
+}
+
+/**
+ * Si una lista está cargada, la actualiza (sin forzar lecturas)
+ */
+function touchLoadedList(key: InvoicesCacheKey, id: string) {
+  if (!_invoiceCache.loadedByKey.has(key)) return;
+  const current = _invoiceCache.listIdsByKey.get(key) || [];
+  _invoiceCache.listIdsByKey.set(key, unshiftUnique(current, id));
 }
 
 export const store = {
   // -------- Invoices (Firestore) --------
 
-  /**
-   * Listado: 1 query por pantalla.
-   * - Si ya está cargado para (uid, issuerId), devuelve caché sin leer.
-   * - `force=true` obliga a recargar.
-   */
   loadInvoicesOnce: async (
     uid: string,
     opts?: { issuerId?: string; pageSize?: number; force?: boolean }
@@ -154,8 +145,6 @@ export const store = {
       orderBy('updatedAt', 'desc'),
       limit(pageSize)
     ];
-
-    // Si quieres filtrar por emisor en listado (Fase 3 lo hará sí o sí)
     if (issuerId) clauses.unshift(where('issuerId', '==', issuerId));
 
     const q = query(col, ...clauses);
@@ -176,9 +165,6 @@ export const store = {
     return ids.map(id => _invoiceCache.byId.get(id)!).filter(Boolean);
   },
 
-  /**
-   * Paginación controlada (sigue siendo 1 query por “cargar más”).
-   */
   loadMoreInvoices: async (
     uid: string,
     opts?: { issuerId?: string; pageSize?: number }
@@ -220,9 +206,6 @@ export const store = {
     return newIds.map(id => _invoiceCache.byId.get(id)!).filter(Boolean);
   },
 
-  /**
-   * Editor: 0 lecturas si está en caché, si no 1 getDoc.
-   */
   getInvoice: async (uid: string, id: string): Promise<Invoice | null> => {
     const cached = _invoiceCache.byId.get(id);
     if (cached) return cached;
@@ -231,46 +214,42 @@ export const store = {
     const snap = await getDoc(ref);
     if (!snap.exists()) return null;
 
-    const inv = fromFirestoreInvoice(snap.id, snap.data());
-    // Seguridad extra: si por lo que sea llega una factura ajena, la ignoramos
     if ((snap.data() as any)?.ownerUid && (snap.data() as any).ownerUid !== uid) return null;
 
+    const inv = fromFirestoreInvoice(snap.id, snap.data());
     _invoiceCache.byId.set(inv.id, inv);
+
+    // Si la lista general ya estaba cargada, lo metemos sin lecturas extra
+    touchLoadedList(invoicesKey(uid), inv.id);
+
     return inv;
   },
 
-  /**
-   * Guardado local-first:
-   * - Actualiza caché inmediatamente.
-   * - setDoc merge en Firestore.
-   */
+  // ✅ CAMBIO MÍNIMO AQUÍ
   saveInvoice: async (uid: string, invoice: Invoice, opts?: { issuerId?: string }) => {
+    const issuerId = opts?.issuerId || (invoice as any).issuerId || undefined;
+
     // cache local instantánea
     _invoiceCache.byId.set(invoice.id, invoice);
 
-    const ref = doc(db, 'invoices', invoice.id);
-    await setDoc(ref, toFirestoreInvoice(uid, invoice, opts?.issuerId), { merge: true });
+    // Si ya hay listas cargadas, actualizar UI sin recargar
+    touchLoadedList(invoicesKey(uid), invoice.id);
+    if (issuerId) touchLoadedList(invoicesKey(uid, issuerId), invoice.id);
 
-    // No hacemos getDoc de vuelta (evitamos lecturas extra)
+    const ref = doc(db, 'invoices', invoice.id);
+    await setDoc(ref, toFirestoreInvoice(uid, invoice, issuerId), { merge: true });
   },
 
   deleteInvoice: async (uid: string, id: string) => {
-    // cache local
     _invoiceCache.byId.delete(id);
-    // elimina de todas las listas cacheadas
     for (const [k, ids] of _invoiceCache.listIdsByKey.entries()) {
       if (ids.includes(id)) _invoiceCache.listIdsByKey.set(k, ids.filter(x => x !== id));
     }
 
     const ref = doc(db, 'invoices', id);
-    // Nota: la seguridad real la imponen tus rules (ownerUid == auth.uid)
     await deleteDoc(ref);
   },
 
-  /**
-   * (Opcional) Migración 1 vez: pasa facturas de localStorage a Firestore.
-   * Útil si ya estabas probando en local.
-   */
   migrateLocalInvoicesToFirestoreOnce: async (uid: string, opts?: { issuerId?: string }) => {
     const raw = localStorage.getItem(STORAGE_KEYS.INVOICES);
     if (!raw) return;
@@ -283,13 +262,11 @@ export const store = {
     }
     if (!Array.isArray(invoices) || invoices.length === 0) return;
 
-    // Subida secuencial para no saturar (y mantener control)
     for (const inv of invoices) {
       if (!inv?.id) continue;
       await store.saveInvoice(uid, inv, { issuerId: opts?.issuerId });
     }
 
-    // Limpia legacy para no re-migrar
     localStorage.removeItem(STORAGE_KEYS.INVOICES);
   },
 
@@ -313,7 +290,6 @@ export const store = {
       const raw = JSON.parse(rawStr);
       const migrated = migrateSettings(raw);
 
-      // Persist migration once to avoid repeated work
       if (JSON.stringify(raw) !== JSON.stringify(migrated)) {
         localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(migrated));
       }
@@ -368,9 +344,8 @@ export const store = {
     const issuers = settings.issuers.filter(i => i.id !== issuerId);
 
     const nextActive =
-      settings.activeIssuerId === issuerId ? issuers[0]?.id || DEFAULT_ISSUER.id : settings.activeIssuerId;
+      settings.activeIssuerId === issuerId ? (issuers[0]?.id || DEFAULT_ISSUER.id) : settings.activeIssuerId;
 
-    // Don't allow empty issuers list (keep at least one)
     const safeIssuers = issuers.length > 0 ? issuers : [DEFAULT_ISSUER];
 
     store.saveSettings({

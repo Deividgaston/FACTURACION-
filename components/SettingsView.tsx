@@ -1,13 +1,28 @@
 
-import React from 'react';
-import { Save, Bell, Shield, Database, Briefcase } from 'lucide-react';
+import React, { useState } from 'react';
+import { Save, Bell, Shield, Database, Briefcase, Key, LogOut } from 'lucide-react';
 
-const SettingsView: React.FC = () => {
+interface SettingsViewProps {
+  onLogout?: () => void;
+}
+
+const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
+  const [passChanged, setPassChanged] = useState(false);
+  const [newPass, setNewPass] = useState('');
+
+  const handleChangePass = () => {
+    if (newPass.length < 4) return alert('La contraseña debe tener 4 caracteres');
+    localStorage.setItem('si_master_password', btoa(newPass));
+    setPassChanged(true);
+    setTimeout(() => setPassChanged(false), 3000);
+    setNewPass('');
+  };
+
   return (
-    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 max-w-3xl">
+    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 max-w-3xl pb-20">
       <div>
         <h1 className="text-3xl font-bold text-slate-800">Ajustes</h1>
-        <p className="text-slate-500">Configura tus datos fiscales y preferencias de la aplicación.</p>
+        <p className="text-slate-500">Configura tus datos fiscales y seguridad de acceso.</p>
       </div>
 
       <div className="grid gap-8">
@@ -31,50 +46,69 @@ const SettingsView: React.FC = () => {
                 <label className="text-sm font-semibold text-slate-600">Dirección Completa</label>
                 <input type="text" defaultValue="Calle Alcalde Sainz de Baranda 55, 6ºD" className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none" />
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-slate-600">Email de contacto</label>
-                <input type="email" defaultValue="patricia@example.com" className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none" />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-slate-600">Prefijo Facturación</label>
-                <input type="text" defaultValue="2025-" className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none" />
-              </div>
             </div>
+            <button className="bg-indigo-600 text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all flex items-center gap-2">
+              <Save size={18} /> Guardar Datos Fiscales
+            </button>
           </div>
         </section>
 
-        {/* Preferences Section */}
-        <section className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden opacity-50 cursor-not-allowed">
+        {/* Security Section */}
+        <section className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
           <div className="p-6 bg-slate-50 border-b border-slate-100 flex items-center gap-3 text-slate-800">
-            <Bell size={20} className="text-indigo-600" />
-            <h2 className="font-bold">Notificaciones y Automatización</h2>
+            <Shield size={20} className="text-indigo-600" />
+            <h2 className="font-bold">Seguridad y Privacidad</h2>
           </div>
-          <div className="p-8 space-y-4">
-             <div className="flex items-center justify-between">
-              <div>
-                <p className="font-bold">Generación Automática</p>
-                <p className="text-sm text-slate-500">Generar facturas recurrentes el día 1 de cada mes.</p>
+          <div className="p-8 space-y-6">
+            <div className="space-y-4">
+              <div className="flex flex-col md:flex-row md:items-end gap-4">
+                <div className="flex-1 space-y-2">
+                  <label className="text-sm font-semibold text-slate-600">Cambiar Contraseña Maestra</label>
+                  <div className="relative">
+                    <Key className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                    <input 
+                      type="password" 
+                      placeholder="Nueva contraseña" 
+                      value={newPass}
+                      onChange={(e) => setNewPass(e.target.value)}
+                      className="w-full px-4 py-3 pl-12 rounded-xl border border-slate-200 outline-none" 
+                    />
+                  </div>
+                </div>
+                <button 
+                  onClick={handleChangePass}
+                  className="bg-slate-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-slate-800 transition-all"
+                >
+                  Actualizar Clave
+                </button>
               </div>
-              <div className="w-12 h-6 bg-indigo-600 rounded-full relative">
-                <div className="absolute right-1 top-1 w-4 h-4 bg-white rounded-full"></div>
-              </div>
+              {passChanged && <p className="text-green-600 font-bold text-xs">✓ Contraseña actualizada correctamente.</p>}
             </div>
-             <div className="flex items-center justify-between">
+
+            <hr className="border-slate-50" />
+
+            <div className="flex items-center justify-between p-4 bg-red-50 rounded-2xl border border-red-100">
               <div>
-                <p className="font-bold">Envío Directo</p>
-                <p className="text-sm text-slate-500">Enviar PDF por email automáticamente al generarse.</p>
+                <p className="font-bold text-red-800">Sesión Actual</p>
+                <p className="text-sm text-red-600/70">Cierra la sesión para bloquear el acceso de nuevo.</p>
               </div>
-              <div className="w-12 h-6 bg-slate-200 rounded-full relative">
-                <div className="absolute left-1 top-1 w-4 h-4 bg-white rounded-full"></div>
-              </div>
+              <button 
+                onClick={onLogout}
+                className="flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-xl font-bold hover:bg-red-700 transition-all"
+              >
+                <LogOut size={18} /> Salir
+              </button>
             </div>
           </div>
         </section>
 
-        <div className="flex justify-end gap-4">
-          <button className="px-8 py-3 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all flex items-center gap-2">
-            <Save size={18} /> Guardar Cambios
-          </button>
+        {/* Info Box */}
+        <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-6 text-indigo-700 flex gap-4">
+            <Shield className="shrink-0 mt-1" />
+            <div className="text-sm">
+                <p className="font-bold mb-1">Sobre tu seguridad</p>
+                <p>Todos los datos se guardan exclusivamente en el navegador local de este dispositivo. No se envían a ningún servidor externo, asegurando tu total privacidad fiscal.</p>
+            </div>
         </div>
       </div>
     </div>

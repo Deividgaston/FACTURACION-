@@ -1,8 +1,9 @@
 
-import React, { useState } from 'react';
-import { Search, Filter, Download, MoreVertical, ExternalLink } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { Search, Filter, Download, MoreVertical, ExternalLink, Trash2 } from 'lucide-react';
 import { STATUS_COLORS } from '../constants';
 import { InvoiceStatus } from '../types';
+import { store } from '../lib/store';
 
 interface InvoiceListProps {
   onEdit: (id: string) => void;
@@ -11,15 +12,27 @@ interface InvoiceListProps {
 
 const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
   const [filter, setFilter] = useState<InvoiceStatus | 'ALL'>('ALL');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [refresh, setRefresh] = useState(0);
   
-  const invoices = [
-    { id: '1', number: '20251202001', client: '2N Telekomunikace', date: '01 Nov 2025', total: '189,02 €', status: 'PAID' as const },
-    { id: '2', number: '20250101', client: 'Iñaki Gambra', date: '01 Ene 2025', total: '302,50 €', status: 'PAID' as const },
-    { id: '3', number: '20250204', client: 'Empresa Demo SL', date: '10 Feb 2025', total: '1.200,00 €', status: 'ISSUED' as const },
-    { id: '4', number: '20250205', client: 'Juan Perez', date: '11 Feb 2025', total: '500,00 €', status: 'DRAFT' as const },
-  ];
+  const invoices = useMemo(() => store.getInvoices(), [refresh]);
 
-  const filteredInvoices = filter === 'ALL' ? invoices : invoices.filter(i => i.status === filter);
+  const filteredInvoices = useMemo(() => {
+    return invoices.filter(inv => {
+      const matchesFilter = filter === 'ALL' || inv.status === filter;
+      const matchesSearch = inv.recipient.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                          inv.number.includes(searchTerm);
+      return matchesFilter && matchesSearch;
+    }).reverse();
+  }, [invoices, filter, searchTerm]);
+
+  const handleDelete = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (confirm('¿Estás seguro de que quieres eliminar esta factura?')) {
+        store.deleteInvoice(id);
+        setRefresh(prev => prev + 1);
+    }
+  };
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
@@ -34,6 +47,8 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
           <input 
             type="text" 
             placeholder="Buscar por cliente o número..." 
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full pl-10 pr-4 py-2 bg-slate-50 border-none rounded-xl outline-none focus:ring-2 focus:ring-indigo-100"
           />
         </div>
@@ -58,19 +73,17 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
             <tr className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">
               <th className="py-4 px-6">Número</th>
               <th className="py-4 px-6">Cliente</th>
-              <th className="py-4 px-6">Fecha</th>
               <th className="py-4 px-6 text-right">Importe</th>
               <th className="py-4 px-6 text-center">Estado</th>
               <th className="py-4 px-6"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-50">
-            {filteredInvoices.map((inv) => (
-              <tr key={inv.id} className="group hover:bg-slate-50/50 transition-colors">
+            {filteredInvoices.length > 0 ? filteredInvoices.map((inv) => (
+              <tr key={inv.id} onClick={() => onEdit(inv.id)} className="group hover:bg-slate-50 transition-colors cursor-pointer">
                 <td className="py-5 px-6 font-mono text-sm font-bold text-slate-400">{inv.number}</td>
-                <td className="py-5 px-6 font-bold text-slate-800">{inv.client}</td>
-                <td className="py-5 px-6 text-slate-500 text-sm">{inv.date}</td>
-                <td className="py-5 px-6 text-right font-black text-slate-900">{inv.total}</td>
+                <td className="py-5 px-6 font-bold text-slate-800">{inv.recipient.name}</td>
+                <td className="py-5 px-6 text-right font-black text-slate-900">{inv.total.toFixed(2)} €</td>
                 <td className="py-5 px-6">
                    <div className="flex justify-center">
                     <span className={`px-3 py-1 rounded-full text-[10px] font-black border ${STATUS_COLORS[inv.status]}`}>
@@ -80,16 +93,17 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
                 </td>
                 <td className="py-5 px-6 text-right">
                   <div className="flex items-center justify-end gap-2">
-                    <button onClick={() => onEdit(inv.id)} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all">
-                      <ExternalLink size={18} />
-                    </button>
-                    <button className="p-2 text-slate-400 hover:text-slate-600">
-                      <MoreVertical size={18} />
+                    <button onClick={(e) => handleDelete(inv.id, e)} className="p-2 text-slate-300 hover:text-red-600 rounded-lg transition-all">
+                      <Trash2 size={18} />
                     </button>
                   </div>
                 </td>
               </tr>
-            ))}
+            )) : (
+                <tr>
+                    <td colSpan={5} className="py-20 text-center text-slate-400">No se encontraron facturas</td>
+                </tr>
+            )}
           </tbody>
         </table>
       </div>

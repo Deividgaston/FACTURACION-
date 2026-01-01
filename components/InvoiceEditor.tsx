@@ -1,9 +1,9 @@
 
-import React, { useState, useEffect } from 'react';
-import { ChevronLeft, Save, Send, Eye, Plus, Trash2, CheckCircle, Download } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { ChevronLeft, Save, Send, Eye, Plus, Trash2, CheckCircle, Printer } from 'lucide-react';
 import { Invoice, InvoiceItem, Party, Language } from '../types';
-// Import TRANSLATIONS from constants instead of types
 import { TRANSLATIONS } from '../constants';
+import { store } from '../lib/store';
 
 interface InvoiceEditorProps {
   onBack: () => void;
@@ -11,48 +11,95 @@ interface InvoiceEditorProps {
 }
 
 const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
+  const settings = useMemo(() => store.getSettings(), []);
+  const clients = useMemo(() => store.getClients(), []);
+
   const [step, setStep] = useState(1);
   const [lang, setLang] = useState<Language>('ES');
-  const [items, setItems] = useState<InvoiceItem[]>([
-    { id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 1000, amount: 1000 }
-  ]);
+  const [items, setItems] = useState<InvoiceItem[]>([]);
   const [vatRate, setVatRate] = useState(21);
   const [irpfRate, setIrpfRate] = useState(15);
-  const [status, setStatus] = useState<'DRAFT' | 'ISSUED' | 'PAID'>('DRAFT');
+  const [status, setStatus] = useState<any>('DRAFT');
+  const [selectedClientId, setSelectedClientId] = useState('');
+  const [invoiceNumber, setInvoiceNumber] = useState('');
 
-  // Dummy party data
-  const [issuer] = useState<Party>({
-    name: 'Patricia de Pastor Mendez',
-    taxId: '06010586L',
-    address: { street: 'Alcalde Sainz de Baranda 55', city: 'Madrid', zip: '28009', country: 'Spain' },
-    email: 'patricia@example.com'
-  });
-
+  const [issuer] = useState<Party>(settings.issuerDefaults);
   const [recipient, setRecipient] = useState<Party>({
-    name: '2N Telekomunikace a.s.',
-    taxId: 'CZ 26 18 39 60',
-    address: { street: 'Modranska 621/72', city: 'Praha 4', zip: '14301', country: 'Czech Republic' },
-    email: 'client@2n.cz'
+    name: 'Selecciona un cliente',
+    taxId: '-',
+    address: { street: '-', city: '-', zip: '-', country: '-' },
+    email: '-'
   });
+
+  useEffect(() => {
+    if (invoiceId && invoiceId !== 'new') {
+      const inv = store.getInvoices().find(i => i.id === invoiceId);
+      if (inv) {
+        setItems(inv.items);
+        setVatRate(inv.vatRate);
+        setIrpfRate(inv.irpfRate);
+        setStatus(inv.status);
+        setRecipient(inv.recipient);
+        setLang(inv.lang);
+        setInvoiceNumber(inv.number);
+      }
+    } else {
+      const year = new Date().getFullYear();
+      const count = (settings.yearCounter[year] || 0) + 1;
+      setInvoiceNumber(`${year}${count.toString().padStart(4, '0')}`);
+      setItems([{ id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }]);
+    }
+  }, [invoiceId, settings]);
 
   const subtotal = items.reduce((acc, item) => acc + item.amount, 0);
   const vatAmount = (subtotal * vatRate) / 100;
   const irpfAmount = (subtotal * irpfRate) / 100;
   const total = subtotal + vatAmount - irpfAmount;
 
-  const addItem = () => {
-    const newItem = { id: Date.now().toString(), description: '', quantity: 1, unitCost: 0, amount: 0 };
-    setItems([...items, newItem]);
+  const handleSave = () => {
+    const newInvoice: Invoice = {
+      id: invoiceId && invoiceId !== 'new' ? invoiceId : Date.now().toString(),
+      number: invoiceNumber,
+      issuer,
+      recipient,
+      clientId: selectedClientId,
+      date: new Date().toISOString(),
+      dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      status,
+      lang,
+      items,
+      subtotal,
+      vatRate,
+      vatAmount,
+      irpfRate,
+      irpfAmount,
+      total,
+      isRecurring: false
+    };
+
+    store.saveInvoice(newInvoice);
+    
+    if (invoiceId === 'new') {
+        const year = new Date().getFullYear();
+        store.saveSettings({
+            ...settings,
+            yearCounter: { ...settings.yearCounter, [year]: (settings.yearCounter[year] || 0) + 1 }
+        });
+    }
+    
+    onBack();
   };
 
-  const removeItem = (id: string) => setItems(items.filter(i => i.id !== id));
+  const addItem = () => {
+    setItems([...items, { id: Date.now().toString(), description: '', quantity: 1, unitCost: 0, amount: 0 }]);
+  };
 
   const updateItem = (id: string, field: keyof InvoiceItem, value: any) => {
     setItems(items.map(item => {
       if (item.id === id) {
         const updated = { ...item, [field]: value };
         if (field === 'quantity' || field === 'unitCost') {
-          updated.amount = updated.quantity * updated.unitCost;
+          updated.amount = Number(updated.quantity) * Number(updated.unitCost);
         }
         return updated;
       }
@@ -64,26 +111,33 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
-      {/* Top Bar */}
-      <div className="flex items-center justify-between">
+      {/* Estilos de Impresión */}
+      <style>{`
+        @media print {
+          body * { visibility: hidden; }
+          .printable-area, .printable-area * { visibility: visible; }
+          .printable-area { position: absolute; left: 0; top: 0; width: 100%; }
+          .no-print { display: none !important; }
+        }
+      `}</style>
+
+      <div className="flex items-center justify-between no-print">
         <button onClick={onBack} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition-colors">
-          <ChevronLeft size={20} />
-          Volver
+          <ChevronLeft size={20} /> Volver
         </button>
         <div className="flex gap-3">
-           <button className="hidden sm:flex items-center gap-2 px-4 py-2 border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition-colors">
-            <Eye size={18} />
-            Previsualizar
-          </button>
-          <button className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg font-bold shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all">
-            <Save size={18} />
-            Guardar
+          {step === 4 && (
+            <button onClick={() => window.print()} className="flex items-center gap-2 px-4 py-2 border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition-colors">
+                <Printer size={18} /> Imprimir / PDF
+            </button>
+          )}
+          <button onClick={handleSave} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg font-bold shadow-lg hover:bg-indigo-700 transition-all">
+            <Save size={18} /> Guardar
           </button>
         </div>
       </div>
 
-      {/* Steps indicator - Desktop only */}
-      <div className="hidden sm:flex items-center justify-between px-8 py-4 bg-white rounded-2xl border border-slate-100 shadow-sm">
+      <div className="hidden sm:flex items-center justify-between px-8 py-4 bg-white rounded-2xl border border-slate-100 shadow-sm no-print">
         {[1, 2, 3, 4].map(s => (
           <div key={s} className="flex items-center gap-3">
             <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${
@@ -99,33 +153,39 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         ))}
       </div>
 
-      <div className="bg-white rounded-3xl border border-slate-100 shadow-xl overflow-hidden min-h-[500px] flex flex-col">
-        {/* Mobile-first Wizard steps */}
+      <div className="bg-white rounded-3xl border border-slate-100 shadow-xl overflow-hidden min-h-[500px] flex flex-col no-print">
         <div className="p-8 flex-1">
           {step === 1 && (
             <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
               <h2 className="text-2xl font-bold text-slate-800">Seleccionar Cliente</h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-2">
-                  <label className="text-sm font-semibold text-slate-600">Idioma de la factura</label>
-                  <div className="flex gap-2">
-                    <button onClick={() => setLang('ES')} className={`flex-1 py-3 rounded-xl border font-bold transition-all ${lang === 'ES' ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white border-slate-200 text-slate-400'}`}>Español</button>
-                    <button onClick={() => setLang('EN')} className={`flex-1 py-3 rounded-xl border font-bold transition-all ${lang === 'EN' ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white border-slate-200 text-slate-400'}`}>English</button>
-                  </div>
+                  <label className="text-sm font-semibold text-slate-600">Cliente</label>
+                  <select 
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
+                    onChange={(e) => {
+                        const c = clients.find(cl => (cl as any).id === e.target.value);
+                        if(c) {
+                            setRecipient(c);
+                            setSelectedClientId(e.target.value);
+                        }
+                    }}
+                  >
+                    <option value="">Seleccionar de la lista...</option>
+                    {clients.map((c: any) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-semibold text-slate-600">Fecha de Emisión</label>
-                  <input type="date" defaultValue={new Date().toISOString().split('T')[0]} className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none" />
+                  <label className="text-sm font-semibold text-slate-600">Nº Factura</label>
+                  <input type="text" value={invoiceNumber} readOnly className="w-full px-4 py-3 rounded-xl border border-slate-100 bg-slate-50 text-slate-400 font-mono outline-none" />
                 </div>
               </div>
-              <div className="space-y-4">
-                <label className="text-sm font-semibold text-slate-600">Datos del Cliente</label>
-                <div className="p-6 bg-slate-50 rounded-2xl border border-dashed border-slate-300">
-                  <h3 className="font-bold text-slate-800">{recipient.name}</h3>
-                  <p className="text-sm text-slate-500">{recipient.taxId}</p>
-                  <p className="text-sm text-slate-500">{recipient.address.street}, {recipient.address.city}</p>
-                </div>
-                <button className="text-indigo-600 font-bold text-sm hover:underline">+ Cambiar cliente</button>
+              <div className="p-6 bg-slate-50 rounded-2xl border border-dashed border-slate-300">
+                <h3 className="font-bold text-slate-800">{recipient.name}</h3>
+                <p className="text-sm text-slate-500">{recipient.taxId} | {recipient.email}</p>
+                <p className="text-sm text-slate-500">{recipient.address.street}, {recipient.address.city}</p>
               </div>
             </div>
           )}
@@ -142,38 +202,15 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                 {items.map((item) => (
                   <div key={item.id} className="grid grid-cols-12 gap-3 items-end p-4 bg-slate-50 rounded-2xl">
                     <div className="col-span-12 md:col-span-6 space-y-1">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase">Descripción</label>
-                      <input 
-                        value={item.description} 
-                        onChange={e => updateItem(item.id, 'description', e.target.value)}
-                        placeholder="Ej: Alquiler Local Calle Mayor" 
-                        className="w-full bg-white px-3 py-2 rounded-lg border border-slate-200 outline-none text-sm" 
-                      />
+                      <input value={item.description} onChange={e => updateItem(item.id, 'description', e.target.value)} placeholder="Descripción del servicio..." className="w-full bg-white px-3 py-2 rounded-lg border border-slate-200 outline-none text-sm" />
                     </div>
-                    <div className="col-span-4 md:col-span-2 space-y-1">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase">Cantidad</label>
-                      <input 
-                        type="number" 
-                        value={item.quantity} 
-                        onChange={e => updateItem(item.id, 'quantity', Number(e.target.value))}
-                        className="w-full bg-white px-3 py-2 rounded-lg border border-slate-200 outline-none text-sm" 
-                      />
+                    <div className="col-span-4 md:col-span-2">
+                      <input type="number" value={item.quantity} onChange={e => updateItem(item.id, 'quantity', e.target.value)} className="w-full bg-white px-3 py-2 rounded-lg border border-slate-200 text-sm" />
                     </div>
-                    <div className="col-span-4 md:col-span-2 space-y-1">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase">Precio</label>
-                      <input 
-                        type="number" 
-                        value={item.unitCost} 
-                        onChange={e => updateItem(item.id, 'unitCost', Number(e.target.value))}
-                        className="w-full bg-white px-3 py-2 rounded-lg border border-slate-200 outline-none text-sm" 
-                      />
+                    <div className="col-span-4 md:col-span-2">
+                      <input type="number" value={item.unitCost} onChange={e => updateItem(item.id, 'unitCost', e.target.value)} className="w-full bg-white px-3 py-2 rounded-lg border border-slate-200 text-sm" />
                     </div>
-                    <div className="col-span-3 md:col-span-1 text-right mb-2 font-bold text-slate-800">
-                      {item.amount.toFixed(2)}€
-                    </div>
-                    <div className="col-span-1 flex justify-end mb-2">
-                      <button onClick={() => removeItem(item.id)} className="text-red-400 hover:text-red-600 p-1"><Trash2 size={16} /></button>
-                    </div>
+                    <div className="col-span-4 md:col-span-2 font-bold text-right text-slate-800">{item.amount.toFixed(2)}€</div>
                   </div>
                 ))}
               </div>
@@ -182,32 +219,20 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
           {step === 3 && (
             <div className="space-y-6 animate-in fade-in slide-in-from-right-4 max-w-md mx-auto">
-              <h2 className="text-2xl font-bold text-slate-800">Impuestos y Retención</h2>
+              <h2 className="text-2xl font-bold text-slate-800">Impuestos</h2>
               <div className="space-y-4 p-6 bg-slate-50 rounded-3xl border border-slate-100">
                 <div className="flex items-center justify-between">
                   <span className="font-semibold text-slate-600">IVA (%)</span>
                   <input type="number" value={vatRate} onChange={e => setVatRate(Number(e.target.value))} className="w-20 px-3 py-2 rounded-lg border border-slate-200 text-right outline-none font-bold" />
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="font-semibold text-slate-600">IRPF / Retención (%)</span>
+                  <span className="font-semibold text-slate-600">IRPF (%)</span>
                   <input type="number" value={irpfRate} onChange={e => setIrpfRate(Number(e.target.value))} className="w-20 px-3 py-2 rounded-lg border border-slate-200 text-right outline-none font-bold" />
                 </div>
                 <hr className="border-slate-200" />
-                <div className="flex justify-between items-center text-slate-500">
-                  <span>{t.subtotal}</span>
-                  <span>{subtotal.toLocaleString()} €</span>
-                </div>
-                <div className="flex justify-between items-center text-slate-500">
-                  <span>{t.vat} ({vatRate}%)</span>
-                  <span>+ {vatAmount.toLocaleString()} €</span>
-                </div>
-                <div className="flex justify-between items-center text-slate-500">
-                  <span>{t.irpf} ({irpfRate}%)</span>
-                  <span>- {irpfAmount.toLocaleString()} €</span>
-                </div>
-                <div className="flex justify-between items-center pt-4 border-t border-slate-200">
-                  <span className="text-lg font-bold text-slate-800">{t.total}</span>
-                  <span className="text-2xl font-black text-indigo-700">{total.toLocaleString()} €</span>
+                <div className="flex justify-between items-center text-slate-800 font-black pt-4 border-t border-slate-200">
+                  <span className="text-lg uppercase">Total Factura</span>
+                  <span className="text-2xl text-indigo-700">{total.toLocaleString()} €</span>
                 </div>
               </div>
             </div>
@@ -215,124 +240,97 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
           {step === 4 && (
             <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-2xl font-bold text-slate-800">Revisión Final</h2>
-                <div className={`px-4 py-1.5 rounded-full border font-bold text-xs ${
-                  status === 'PAID' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-slate-50 text-slate-600 border-slate-200'
-                }`}>
-                  ESTADO: {status === 'PAID' ? t.paid : 'PENDIENTE'}
-                </div>
+              <h2 className="text-2xl font-bold text-slate-800">Revisión Final</h2>
+              <div className="flex gap-4">
+                  <button onClick={() => setStatus('PAID')} className={`flex-1 py-3 rounded-xl border font-bold transition-all ${status === 'PAID' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-white text-slate-400'}`}>PAGADA</button>
+                  <button onClick={() => setStatus('ISSUED')} className={`flex-1 py-3 rounded-xl border font-bold transition-all ${status === 'ISSUED' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white text-slate-400'}`}>EMITIDA</button>
               </div>
-
-              {/* PDF Preview Mockup */}
-              <div className="border border-slate-200 rounded-lg p-10 bg-white shadow-sm space-y-10 max-w-[210mm] mx-auto min-h-[400px]">
-                <div className="flex justify-between items-start">
-                   <div className="space-y-1">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">{t.date}</p>
-                    <p className="font-bold">01/11/2025</p>
-                  </div>
-                   <div className="space-y-1 text-right">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">{t.number}</p>
-                    <p className="font-bold text-xl">20251202001</p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-20">
-                  <div className="space-y-2">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase border-b pb-1">{t.issuer}</p>
-                    <p className="font-bold text-sm">{issuer.name}</p>
-                    <p className="text-[10px] text-slate-500 leading-relaxed whitespace-pre-wrap">
-                      {issuer.address.street}, {issuer.address.zip}<br/>{issuer.address.city}, {issuer.address.country}<br/>{issuer.taxId}
-                    </p>
-                  </div>
-                  <div className="space-y-2">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase border-b pb-1">{t.recipient}</p>
-                    <p className="font-bold text-sm">{recipient.name}</p>
-                    <p className="text-[10px] text-slate-500 leading-relaxed whitespace-pre-wrap">
-                      {recipient.address.street}, {recipient.address.zip}<br/>{recipient.address.city}, {recipient.address.country}<br/>{recipient.taxId}
-                    </p>
-                  </div>
-                </div>
-
-                <table className="w-full text-xs">
-                  <thead className="bg-slate-50 border-y border-slate-200">
-                    <tr>
-                      <th className="py-2 px-2 text-left">{t.description}</th>
-                      <th className="py-2 px-2 text-right">{t.unitCost}</th>
-                      <th className="py-2 px-2 text-right">{t.quantity}</th>
-                      <th className="py-2 px-2 text-right">{t.amount}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {items.map(item => (
-                      <tr key={item.id}>
-                        <td className="py-4 px-2 font-medium">{item.description}</td>
-                        <td className="py-4 px-2 text-right">{item.unitCost.toFixed(2)} €</td>
-                        <td className="py-4 px-2 text-right">{item.quantity}</td>
-                        <td className="py-4 px-2 text-right font-bold">{item.amount.toFixed(2)} €</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr className="border-t-2 border-slate-200">
-                      <td colSpan={3} className="py-2 px-2 text-right font-semibold text-slate-400 uppercase">{t.subtotal}</td>
-                      <td className="py-2 px-2 text-right font-bold">{subtotal.toLocaleString()} €</td>
-                    </tr>
-                    <tr>
-                      <td colSpan={3} className="py-1 px-2 text-right font-semibold text-slate-400 uppercase">{t.vat} ({vatRate}%)</td>
-                      <td className="py-1 px-2 text-right font-bold">{vatAmount.toLocaleString()} €</td>
-                    </tr>
-                    {irpfRate > 0 && (
-                      <tr>
-                        <td colSpan={3} className="py-1 px-2 text-right font-semibold text-slate-400 uppercase">{t.irpf} (-{irpfRate}%)</td>
-                        <td className="py-1 px-2 text-right font-bold">- {irpfAmount.toLocaleString()} €</td>
-                      </tr>
-                    )}
-                    <tr className="bg-slate-900 text-white">
-                      <td colSpan={3} className="py-3 px-2 text-right font-bold uppercase tracking-wider">{t.total}</td>
-                      <td className="py-3 px-2 text-right font-black text-lg">{total.toLocaleString()} €</td>
-                    </tr>
-                  </tfoot>
-                </table>
-
-                {status === 'PAID' && (
-                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 border-4 border-red-500 text-red-500 font-black text-6xl uppercase px-8 py-4 opacity-20 rotate-[-30deg] pointer-events-none">
-                    {t.paid}
-                  </div>
-                )}
-              </div>
+              <p className="text-center text-slate-400 text-sm">Previsualización debajo. Dale a Imprimir para generar el PDF.</p>
             </div>
           )}
         </div>
 
-        {/* Action Bar */}
         <div className="p-6 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
-          <button 
-            disabled={step === 1}
-            onClick={() => setStep(step - 1)}
-            className={`flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold transition-all ${step === 1 ? 'opacity-0 pointer-events-none' : 'text-slate-500 hover:bg-slate-200'}`}
-          >
-            Anterior
+          <button disabled={step === 1} onClick={() => setStep(step - 1)} className={`px-6 py-2.5 rounded-xl font-bold transition-all ${step === 1 ? 'opacity-0' : 'text-slate-500 hover:bg-slate-200'}`}>Anterior</button>
+          <button onClick={() => step < 4 ? setStep(step + 1) : handleSave()} className="bg-indigo-600 text-white px-8 py-2.5 rounded-xl font-bold hover:bg-indigo-700 transition-all">
+            {step < 4 ? 'Siguiente' : 'Finalizar y Guardar'}
           </button>
-          <div className="flex gap-2">
-            {step === 4 && (
-              <button 
-                onClick={() => setStatus(status === 'PAID' ? 'DRAFT' : 'PAID')}
-                className={`flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold transition-all border ${
-                  status === 'PAID' ? 'bg-white border-green-200 text-green-700' : 'bg-white border-slate-200 text-slate-600'
-                }`}
-              >
-                {status === 'PAID' ? 'Marcar Borrador' : 'Marcar Pagado'}
-              </button>
-            )}
-            <button 
-              onClick={() => step < 4 ? setStep(step + 1) : null}
-              className="flex items-center gap-2 bg-indigo-600 text-white px-8 py-2.5 rounded-xl font-bold shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all"
-            >
-              {step < 4 ? 'Siguiente' : 'Finalizar y Enviar'}
-            </button>
-          </div>
         </div>
+      </div>
+
+      {/* Area Imprimible (Mockup de la Factura Real) */}
+      <div className={`printable-area bg-white p-12 border rounded shadow-sm ${step === 4 ? 'block' : 'hidden'}`}>
+        <div className="flex justify-between mb-12">
+            <div>
+                <h1 className="text-2xl font-black text-slate-900 mb-2 uppercase">{t.invoice}</h1>
+                <p className="font-mono text-slate-500">{invoiceNumber}</p>
+            </div>
+            <div className="text-right">
+                <p className="font-bold">{issuer.name}</p>
+                <p className="text-sm text-slate-500">{issuer.taxId}</p>
+            </div>
+        </div>
+        
+        <div className="grid grid-cols-2 gap-12 mb-12 border-t border-b py-8 border-slate-100">
+            <div>
+                <p className="text-[10px] font-bold text-slate-400 uppercase mb-2">{t.recipient}</p>
+                <p className="font-bold">{recipient.name}</p>
+                <p className="text-sm text-slate-500">{recipient.taxId}</p>
+                <p className="text-sm text-slate-500">{recipient.address.street}</p>
+            </div>
+            <div className="text-right">
+                <p className="text-[10px] font-bold text-slate-400 uppercase mb-2">{t.date}</p>
+                <p className="font-bold">{new Date().toLocaleDateString()}</p>
+            </div>
+        </div>
+
+        <table className="w-full mb-12">
+            <thead>
+                <tr className="border-b-2 border-slate-900 text-left text-xs uppercase font-black">
+                    <th className="py-2">{t.description}</th>
+                    <th className="py-2 text-right">{t.unitCost}</th>
+                    <th className="py-2 text-right">{t.quantity}</th>
+                    <th className="py-2 text-right">{t.amount}</th>
+                </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+                {items.map(item => (
+                    <tr key={item.id} className="text-sm">
+                        <td className="py-4 font-medium">{item.description}</td>
+                        <td className="py-4 text-right">{item.unitCost.toFixed(2)} €</td>
+                        <td className="py-4 text-right">{item.quantity}</td>
+                        <td className="py-4 text-right font-bold">{item.amount.toFixed(2)} €</td>
+                    </tr>
+                ))}
+            </tbody>
+        </table>
+
+        <div className="flex justify-end">
+            <div className="w-64 space-y-2">
+                <div className="flex justify-between text-sm text-slate-500 uppercase">
+                    <span>{t.subtotal}</span>
+                    <span>{subtotal.toFixed(2)} €</span>
+                </div>
+                <div className="flex justify-between text-sm text-slate-500 uppercase">
+                    <span>{t.vat} ({vatRate}%)</span>
+                    <span>{vatAmount.toFixed(2)} €</span>
+                </div>
+                <div className="flex justify-between text-sm text-slate-500 uppercase">
+                    <span>{t.irpf} (-{irpfRate}%)</span>
+                    <span>- {irpfAmount.toFixed(2)} €</span>
+                </div>
+                <div className="flex justify-between pt-4 border-t-2 border-slate-900 font-black text-lg">
+                    <span>TOTAL</span>
+                    <span>{total.toFixed(2)} €</span>
+                </div>
+            </div>
+        </div>
+        
+        {status === 'PAID' && (
+            <div className="mt-20 border-4 border-emerald-500 text-emerald-500 font-black text-4xl p-4 inline-block transform -rotate-12 opacity-30">
+                PAGADO
+            </div>
+        )}
       </div>
     </div>
   );

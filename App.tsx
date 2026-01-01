@@ -1,13 +1,13 @@
 
 import React, { useState, useEffect } from 'react';
-import { NAVIGATION } from './constants';
-import Dashboard from './components/Dashboard';
-import InvoiceList from './components/InvoiceList';
-import InvoiceEditor from './components/InvoiceEditor';
-import ClientList from './components/ClientList';
-import TemplateList from './components/TemplateList';
-import SettingsView from './components/SettingsView';
-import Login from './components/Login'; // Import Login
+import { NAVIGATION } from './constants.tsx';
+import Dashboard from './components/Dashboard.tsx';
+import InvoiceList from './components/InvoiceList.tsx';
+import InvoiceEditor from './components/InvoiceEditor.tsx';
+import ClientList from './components/ClientList.tsx';
+import TemplateList from './components/TemplateList.tsx';
+import SettingsView from './components/SettingsView.tsx';
+import Login from './components/Login.tsx';
 import { Menu, X, PlusCircle, LogOut } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -22,7 +22,6 @@ const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [editingInvoiceId, setEditingInvoiceId] = useState<string | null>(null);
 
-  // Check session on mount
   useEffect(() => {
     const session = sessionStorage.getItem('si_session');
     if (session === 'active') {
@@ -56,7 +55,6 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex bg-slate-50 animate-in fade-in duration-700">
-      {/* Sidebar - Desktop */}
       <aside className="hidden lg:flex flex-col w-64 bg-white border-r border-slate-200 p-6 fixed h-full">
         <div className="flex items-center gap-2 mb-10">
           <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white font-bold">S</div>
@@ -99,9 +97,8 @@ const App: React.FC = () => {
         </div>
       </aside>
 
-      {/* Main Content */}
       <main className="flex-1 lg:ml-64 pb-20 lg:pb-0">
-        <header className="lg:hidden bg-white border-b border-slate-200 p-4 sticky top-0 z-30 flex items-center justify-between">
+        <header className="lg:hidden bg-white border-b border-slate-200 p-4 sticky top-0 z-30 flex items-center justify-between no-print">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white font-bold">S</div>
             <span className="text-lg font-bold text-slate-800">SwiftInvoice</span>
@@ -115,7 +112,7 @@ const App: React.FC = () => {
           {renderContent()}
         </div>
 
-        <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 flex justify-around p-2 z-30">
+        <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 flex justify-around p-2 z-30 no-print">
           {NAVIGATION.map((item) => (
             <button
               key={item.path}
@@ -132,7 +129,6 @@ const App: React.FC = () => {
         </nav>
       </main>
 
-      {/* Mobile Menu Overlay */}
       {isSidebarOpen && (
         <div className="fixed inset-0 bg-slate-900/50 z-50 lg:hidden" onClick={() => setIsSidebarOpen(false)}>
           <div className="absolute right-0 top-0 bottom-0 w-64 bg-white p-6 shadow-2xl" onClick={e => e.stopPropagation()}>

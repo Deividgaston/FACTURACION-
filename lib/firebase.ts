@@ -1,18 +1,18 @@
-// Fix: Use named import for initializeApp from the modular Firebase SDK
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
 /**
  * CONFIGURACIÓN DE FIREBASE (Web SDK)
+ * Las claves se inyectan vía variables de entorno (Vite)
  */
 const firebaseConfig = {
-  apiKey: "AIzaSyAxnOd-VYneSj7USsSEEuxFNhwgO5beHZs",
-  authDomain: "swiftinvoice-63a0b.firebaseapp.com",
-  projectId: "swiftinvoice-63a0b",
-  storageBucket: "swiftinvoice-63a0b.firebasestorage.app",
-  messagingSenderId: "196185538050",
-  appId: "1:196185538050:web:baaa3e5852ca70c62db11b"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
 // Inicialización del servicio Firebase App
@@ -22,7 +22,7 @@ const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 
-// Verificación de seguridad para asegurar que la API Key no sea el marcador de posición
-if (firebaseConfig.apiKey.includes("TU_API_KEY")) {
-  console.warn("⚠️ SwiftInvoice: Falta configurar las claves en lib/firebase.ts");
+// Aviso en desarrollo si faltan variables
+if (!firebaseConfig.apiKey) {
+  console.warn('⚠️ SwiftInvoice: Variables de entorno de Firebase no configuradas');
 }

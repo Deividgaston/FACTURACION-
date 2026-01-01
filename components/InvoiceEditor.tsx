@@ -3,6 +3,7 @@ import { ChevronLeft, Save, CheckCircle, Printer, Plus } from 'lucide-react';
 import { Invoice, InvoiceItem, Party, Language } from '../types';
 import { TRANSLATIONS } from '../constants';
 import { store } from '../lib/store';
+import { auth } from '../lib/firebase';
 
 interface InvoiceEditorProps {
   onBack: () => void;
@@ -25,7 +26,9 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const [invoiceNumber, setInvoiceNumber] = useState('');
 
   // Multi-issuer selection
-  const [selectedIssuerId, setSelectedIssuerId] = useState<string>(settings.activeIssuerId || activeIssuer.id);
+  const [selectedIssuerId, setSelectedIssuerId] = useState<string>(
+    settings.activeIssuerId || activeIssuer.id
+  );
 
   // Snapshot used for invoice save & print
   const [issuer, setIssuer] = useState<Party>({
@@ -43,9 +46,17 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   });
 
   useEffect(() => {
-    if (invoiceId && invoiceId !== 'new') {
-      const inv = store.getInvoices().find(i => i.id === invoiceId);
-      if (inv) {
+    let alive = true;
+
+    const load = async () => {
+      // EDIT existing
+      if (invoiceId && invoiceId !== 'new') {
+        const uid = auth.currentUser?.uid;
+        if (!uid) return;
+
+        const inv = await store.getInvoice(uid, invoiceId);
+        if (!alive || !inv) return;
+
         setItems(inv.items);
         setVatRate(inv.vatRate);
         setIrpfRate(inv.irpfRate);
@@ -53,15 +64,18 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         setRecipient(inv.recipient);
         setLang(inv.lang);
         setInvoiceNumber(inv.number);
-        setSelectedClientId(inv.clientId || '');
+        setSelectedClientId((inv as any).clientId || '');
 
         // Keep historical issuer snapshot
         setIssuer(inv.issuer);
+
         // Best-effort: try to map to a current issuer id (optional)
         const match = issuers.find(i => i.taxId === inv.issuer.taxId && i.name === inv.issuer.name);
         if (match) setSelectedIssuerId(match.id);
+        return;
       }
-    } else {
+
+      // NEW
       const year = new Date().getFullYear();
       const count = (settings.yearCounter[year] || 0) + 1;
       setInvoiceNumber(`${year}${count.toString().padStart(4, '0')}`);
@@ -76,7 +90,13 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         address: active.address,
         email: active.email
       });
-    }
+    };
+
+    load();
+
+    return () => {
+      alive = false;
+    };
   }, [invoiceId, settings, issuers]);
 
   // When user changes issuer in UI, update snapshot (only for new invoices or when they explicitly change it)
@@ -98,9 +118,15 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const irpfAmount = (subtotal * irpfRate) / 100;
   const total = subtotal + vatAmount - irpfAmount;
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!selectedClientId) {
       alert('Selecciona un cliente');
+      return;
+    }
+
+    const uid = auth.currentUser?.uid;
+    if (!uid) {
+      alert('No hay sesión activa.');
       return;
     }
 
@@ -124,7 +150,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       isRecurring: false
     };
 
-    store.saveInvoice(newInvoice);
+    await store.saveInvoice(uid, newInvoice, { issuerId: selectedIssuerId });
 
     if (invoiceId === 'new') {
       const year = new Date().getFullYear();
@@ -275,6 +301,10 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
               </div>
             </div>
           )}
+
+          {/* ... el resto del componente queda igual ... */}
+          {/* NO CAMBIOS por Firestore en UI salvo handleSave y load inicial */}
+          {/* (Se mantiene todo tu render tal cual) */}
 
           {step === 2 && (
             <div className="space-y-6 animate-in fade-in slide-in-from-right-4">

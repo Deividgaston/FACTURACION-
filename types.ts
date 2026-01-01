@@ -1,4 +1,3 @@
-
 export type InvoiceStatus = 'DRAFT' | 'ISSUED' | 'PAID' | 'CANCELLED';
 export type InvoiceType = 'RENT' | 'CLASS' | 'SERVICE' | 'OTHER';
 export type Language = 'ES' | 'EN';
@@ -15,6 +14,11 @@ export interface Party {
   taxId: string;
   address: Address;
   email: string;
+}
+
+export interface Issuer extends Party {
+  id: string;        // unique id for selecting/editing
+  alias?: string;    // optional display name (e.g. "Empresa Madrid")
 }
 
 export interface InvoiceItem {
@@ -40,7 +44,7 @@ export interface InvoiceTemplate {
 export interface Invoice {
   id: string;
   number: string;
-  issuer: Party;
+  issuer: Party;     // option A: snapshot stored per invoice (keeps history stable)
   recipient: Party;
   clientId: string;
   templateId?: string;
@@ -60,7 +64,13 @@ export interface Invoice {
 }
 
 export interface AppSettings {
-  issuerDefaults: Party;
+  // New multi-issuer support
+  issuers: Issuer[];
+  activeIssuerId: string;
+
+  // Legacy single-issuer (kept only for migration)
+  issuerDefaults?: Party;
+
   defaultCurrency: string;
   nextInvoiceNumber: number;
   yearCounter: Record<number, number>;

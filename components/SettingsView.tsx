@@ -33,6 +33,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
   const [resetError, setResetError] = useState<string>('');
 
   const [fsError, setFsError] = useState<string>('');
+  const [loading, setLoading] = useState<boolean>(true);
 
   const applySettingsToState = (s: AppSettings) => {
     setIssuers(s.issuers || []);
@@ -40,16 +41,20 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
   };
 
   const loadSettingsOnce = async () => {
+    setLoading(true);
     setFsError('');
+
     const uid = auth.currentUser?.uid;
     if (!uid) {
       applySettingsToState(store.getSettings());
+      setLoading(false);
       return;
     }
 
     // 1 lectura (source of truth Firestore) + fallback local
     try {
       const snap = await getDoc(settingsRef(uid));
+
       if (snap.exists()) {
         const data = snap.data() as any;
         const remote: AppSettings = {
@@ -62,17 +67,29 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
         // cache local
         store.saveSettings(remote);
         applySettingsToState(remote);
+        setFsError('');
         return;
       }
 
       // Si no existe doc en FS, usar local y crear doc (1 write)
       const local = store.getSettings();
       applySettingsToState(local);
-      await setDoc(settingsRef(uid), { ...local, updatedAt: serverTimestamp() }, { merge: true });
+
+      // Intentamos crear en Firestore, pero si falla NO mostramos banner (seguimos con local)
+      try {
+        await setDoc(settingsRef(uid), { ...local, updatedAt: serverTimestamp() }, { merge: true });
+      } catch (e) {
+        console.error('Settings Firestore write (create) failed:', e);
+      }
+
+      setFsError('');
     } catch (e) {
-      // fallback local sin romper
-      setFsError('No se pudieron cargar los ajustes (Firestore).');
+      // fallback local sin romper (y sin banner, porque los datos cargan igual)
+      console.error('Settings Firestore read failed:', e);
       applySettingsToState(store.getSettings());
+      setFsError('');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -87,7 +104,8 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
     try {
       await setDoc(settingsRef(uid), { ...next, updatedAt: serverTimestamp() }, { merge: true });
       setFsError('');
-    } catch {
+    } catch (e) {
+      console.error('Settings Firestore write failed:', e);
       setFsError('No se pudieron guardar los ajustes en Firestore (se guardaron en local).');
     }
   };
@@ -163,7 +181,8 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
       await sendPasswordResetEmail(auth, userEmail);
       setResetSent(true);
       setTimeout(() => setResetSent(false), 4000);
-    } catch {
+    } catch (e) {
+      console.error('Password reset failed:', e);
       setResetError('No se pudo enviar el email de cambio de contraseña.');
     }
   };
@@ -175,7 +194,8 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
         <p className="text-slate-500">Gestiona emisores, seguridad y sesión.</p>
       </header>
 
-      {fsError && (
+      {/* ✅ Solo mostrar error si no estamos cargando */}
+      {fsError && !loading && (
         <div className="bg-red-50 border border-red-200 text-red-700 rounded-2xl px-6 py-4 font-semibold">
           {fsError}
         </div>

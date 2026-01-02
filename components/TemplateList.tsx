@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Plus, LayoutTemplate, RotateCw, Globe, Trash2 } from 'lucide-react';
 import { store } from '../lib/store';
 import { auth } from '../lib/firebase';
-import type { InvoiceTemplate } from '../types';
+import type { InvoiceTemplate, Client, Issuer, InvoiceItem, Party } from '../types';
 
 type Template = InvoiceTemplate & { id: string };
 
@@ -10,9 +10,7 @@ const fmtLastUsed = (tpl: any) => {
   const v = tpl?.lastUsedAt || tpl?.updatedAt || tpl?.createdAt;
   if (!v) return '—';
   try {
-    // Firestore Timestamp -> Date
     if (typeof v?.toDate === 'function') return v.toDate().toLocaleDateString();
-    // ISO/string/number
     const d = new Date(v);
     if (Number.isNaN(d.getTime())) return '—';
     return d.toLocaleDateString();
@@ -21,8 +19,25 @@ const fmtLastUsed = (tpl: any) => {
   }
 };
 
+const toNum = (v: any, fallback: number) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+const pickIndex = (title: string, options: string[], defaultIndex = 0): number | null => {
+  if (!options.length) return null;
+  const lines = options.map((o, i) => `${i + 1}) ${o}`).join('\n');
+  const raw = window.prompt(`${title}\n\n${lines}\n\nEscribe un número:`, String(defaultIndex + 1));
+  if (!raw) return null;
+  const idx = Number(raw) - 1;
+  if (!Number.isFinite(idx) || idx < 0 || idx >= options.length) return null;
+  return idx;
+};
+
 const TemplateList: React.FC = () => {
   const [templates, setTemplates] = useState<Template[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
+  const [issuers, setIssuers] = useState<Issuer[]>([]);
   const [loading, setLoading] = useState(true);
   const [fsError, setFsError] = useState<string>('');
 
@@ -36,10 +51,26 @@ const TemplateList: React.FC = () => {
     setLoading(true);
     setFsError('');
     try {
-      // 1) migración legacy local -> Firestore (solo 1 vez)
+      // 0) issuers (local settings)
+      try {
+        const iss = store.getIssuers?.() || [];
+        setIssuers(Array.isArray(iss) ? (iss as Issuer[]) : []);
+      } catch {
+        setIssuers([]);
+      }
+
+      // 1) clients (1 query por pantalla)
+      try {
+        const cl = await store.loadClientsOnce(uid, { force });
+        setClients((Array.isArray(cl) ? (cl as Client[]) : []) as Client[]);
+      } catch {
+        setClients([]);
+      }
+
+      // 2) migración legacy local -> Firestore (solo 1 vez)
       await store.migrateLocalTemplatesToFirestoreOnce(uid);
 
-      // 2) 1 query por pantalla (cacheable)
+      // 3) templates (1 query por pantalla, cacheable)
       const list = (await store.loadTemplatesOnce(uid, { force })) as any[];
       setTemplates((Array.isArray(list) ? list : []) as Template[]);
     } catch (e: any) {
@@ -55,27 +86,105 @@ const TemplateList: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid]);
 
+  const buildTemplateViaPrompts = (base?: Partial<Template>): Template | null => {
+    // nombre
+    const name = window.prompt('Nombre de la plantilla:', String(base?.name || '').trim());
+    if (!name?.trim()) return null;
+
+    // emisor
+    if (!issuers.length) {
+      alert('No hay emisores configurados en Ajustes.');
+      return null;
+    }
+    const issuerLabels = issuers.map((i) => (i.alias ? `${i.alias} — ${i.name}` : i.name));
+    const issuerDefaultIdx = Math.max(
+      0,
+      issuers.findIndex((i) => i.id === (base as any)?.issuerId)
+    );
+    const issuerIdx = pickIndex('Selecciona EMISOR', issuerLabels, issuerDefaultIdx);
+    if (issuerIdx === null) return null;
+    const issuer = issuers[issuerIdx];
+
+    // cliente/receptor
+    if (!clients.length) {
+      alert('No hay clientes. Crea primero un cliente.');
+      return null;
+    }
+    const clientLabels = clients.map((c) => `${c.name} (${c.taxId || '—'})`);
+    const clientDefaultIdx = Math.max(
+      0,
+      clients.findIndex((c) => c.id === (base as any)?.clientId)
+    );
+    const clientIdx = pickIndex('Selecciona RECEPTOR (cliente)', clientLabels, clientDefaultIdx);
+    if (clientIdx === null) return null;
+    const client = clients[clientIdx];
+
+    // línea (concepto + qty + precio)
+    const desc = window.prompt('Concepto / descripción:', String((base as any)?.items?.[0]?.description || '')) ?? '';
+    const quantity = toNum(
+      window.prompt('Cantidad:', String((base as any)?.items?.[0]?.quantity ?? 1)),
+      1
+    );
+    const unitCost = toNum(
+      window.prompt('Precio unitario (€):', String((base as any)?.items?.[0]?.unitCost ?? 0)),
+      0
+    );
+
+    const item: InvoiceItem = {
+      id: (base as any)?.items?.[0]?.id || Date.now().toString(),
+      description: String(desc || '').trim(),
+      quantity,
+      unitCost,
+      amount: (Number.isFinite(quantity) ? quantity : 0) * (Number.isFinite(unitCost) ? unitCost : 0)
+    };
+
+    const vatRate = toNum(window.prompt('IVA (%):', String(base?.vatRate ?? 21)), 21);
+    const irpfRate = toNum(window.prompt('IRPF (%):', String(base?.irpfRate ?? 15)), 15);
+
+    const tpl: Template = {
+      id: String(base?.id || Date.now().toString()),
+      name: name.trim(),
+      type: (base?.type as any) || 'GENERIC',
+      lang: (base?.lang as any) || 'ES',
+
+      issuerId: issuer.id,
+      issuer: {
+        name: issuer.name,
+        taxId: issuer.taxId,
+        address: issuer.address,
+        email: issuer.email
+      } as Party,
+
+      clientId: client.id,
+      recipient: {
+        name: client.name,
+        taxId: client.taxId,
+        address: client.address,
+        email: client.email
+      } as Party,
+
+      items: [item],
+
+      vatRate,
+      irpfRate,
+
+      isRecurring: false,
+      recurring: false,
+
+      lastUsedAt: (base as any)?.lastUsedAt || null
+    } as any;
+
+    return tpl;
+  };
+
   const handleCreate = async () => {
     if (!uid) return;
 
-    const name = window.prompt('Nombre de la plantilla:');
-    if (!name?.trim()) return;
-
-    // ✅ cambios mínimos: plantilla “base” (completa campos con defaults, sin asumir demasiado el type)
-    const tpl: any = {
-      id: Date.now().toString(),
-      name: name.trim(),
-      type: 'GENERIC',
-      recurring: false,
-      lang: 'ES',
-      items: [],
-      vatRate: 21,
-      irpfRate: 15,
-      lastUsedAt: null
-    };
+    const tpl = buildTemplateViaPrompts();
+    if (!tpl) return;
 
     // UI optimista
-    setTemplates(prev => [tpl as Template, ...prev]);
+    setTemplates((prev) => [tpl, ...prev]);
 
     try {
       await store.saveTemplate(uid, tpl as InvoiceTemplate);
@@ -87,12 +196,31 @@ const TemplateList: React.FC = () => {
     }
   };
 
+  const handleEdit = async (tpl: Template) => {
+    if (!uid) return;
+
+    const next = buildTemplateViaPrompts(tpl);
+    if (!next) return;
+
+    // UI optimista
+    setTemplates((prev) => prev.map((t) => (t.id === tpl.id ? next : t)));
+
+    try {
+      await store.saveTemplate(uid, next as InvoiceTemplate);
+      setFsError('');
+    } catch (e: any) {
+      console.error('Template update failed:', e);
+      setFsError(e?.message ? String(e.message) : 'No se pudo actualizar la plantilla.');
+      await reload(true);
+    }
+  };
+
   const handleDelete = async (id: string) => {
     if (!uid) return;
     if (!confirm('¿Eliminar esta plantilla?')) return;
 
     // UI optimista
-    setTemplates(prev => prev.filter(t => t.id !== id));
+    setTemplates((prev) => prev.filter((t) => t.id !== id));
 
     try {
       await store.deleteTemplate(uid, id);
@@ -111,7 +239,7 @@ const TemplateList: React.FC = () => {
     const next: any = { ...tpl, lastUsedAt: new Date().toISOString() };
 
     // UI optimista
-    setTemplates(prev => prev.map(t => (t.id === tpl.id ? (next as Template) : t)));
+    setTemplates((prev) => prev.map((t) => (t.id === tpl.id ? (next as Template) : t)));
 
     try {
       await store.saveTemplate(uid, next as InvoiceTemplate);
@@ -150,7 +278,7 @@ const TemplateList: React.FC = () => {
             <LayoutTemplate size={24} />
           </div>
           <div className="flex gap-2 items-center">
-            {tpl.recurring && (
+            {(tpl.isRecurring || tpl.recurring) && (
               <div className="p-2 bg-amber-50 text-amber-600 rounded-lg" title="Recurrente">
                 <RotateCw size={16} />
               </div>
@@ -170,8 +298,15 @@ const TemplateList: React.FC = () => {
         </div>
 
         <h3 className="text-xl font-bold text-slate-800 mb-1">{tpl.name || 'Sin nombre'}</h3>
-        <p className="text-slate-400 text-sm mb-4">
+
+        <p className="text-slate-400 text-sm mb-2">
           {(tpl.type || 'TEMPLATE')} • Usada por última vez: {fmtLastUsed(tpl)}
+        </p>
+
+        <p className="text-slate-500 text-xs mb-4">
+          <b>Emisor:</b> {tpl?.issuer?.name || '—'} <br />
+          <b>Cliente:</b> {tpl?.recipient?.name || '—'} <br />
+          <b>Concepto:</b> {tpl?.items?.[0]?.description || '—'}
         </p>
 
         <div className="pt-4 border-t border-slate-50 flex gap-2">
@@ -182,7 +317,7 @@ const TemplateList: React.FC = () => {
             Usar ahora
           </button>
           <button
-            onClick={() => alert('Edición de plantilla: siguiente paso cuando conectemos su uso en factura.')}
+            onClick={() => handleEdit(tpl as Template)}
             className="flex-1 bg-slate-50 text-slate-600 py-2 rounded-xl text-xs font-bold hover:bg-slate-200"
           >
             Editar

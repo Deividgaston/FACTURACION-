@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Save, Shield, Briefcase, LogOut, Plus, Trash2, Check, Mail } from 'lucide-react';
 import { store } from '../lib/store';
 import { Issuer, AppSettings } from '../types';
@@ -35,6 +35,9 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
   const [fsError, setFsError] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(true);
 
+  // ✅ evita re-volcar settings a Firestore en cada cambio de auth
+  const ensuredToFsRef = useRef(false);
+
   const applySettingsToState = (s: AppSettings) => {
     setIssuers(s.issuers || []);
     setActiveId(s.activeIssuerId || (s.issuers?.[0]?.id || ''));
@@ -45,8 +48,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
     setLoading(true);
     setFsError('');
 
-    // Si no hay uid, mostramos local (rápido) pero NO damos por finalizado el flujo:
-    // en cuanto haya uid, re-cargaremos desde Firestore.
+    // Si no hay uid, mostramos local (rápido)
     if (!uid) {
       applySettingsToState(store.getSettings());
       setLoading(false);
@@ -108,9 +110,25 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
     // 1) pinta algo rápido desde local
     loadSettingsOnce(null);
 
-    // 2) cuando Auth esté listo, carga Firestore y crea doc si falta
-    const unsub = onAuthStateChanged(auth, (user) => {
-      loadSettingsOnce(user?.uid || null);
+    // 2) cuando Auth esté listo, aseguramos que haya doc en Firestore y luego cargamos
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      const uid = user?.uid || null;
+      if (!uid) return;
+
+      // ✅ Volcado inicial a Firestore (una vez por sesión) para que NO dependa de “escribir algo”
+      if (!ensuredToFsRef.current) {
+        ensuredToFsRef.current = true;
+        try {
+          const local = store.getSettings();
+          await setDoc(settingsRef(uid), { ...local, updatedAt: serverTimestamp() }, { merge: true });
+          setFsError('');
+        } catch (e) {
+          console.error('Settings Firestore ensure failed:', e);
+          setFsError('No se pudieron guardar los ajustes en Firestore (se guardaron en local).');
+        }
+      }
+
+      await loadSettingsOnce(uid);
     });
 
     return () => unsub();

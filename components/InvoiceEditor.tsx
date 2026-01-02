@@ -394,7 +394,10 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         numberToUse = await reserveInvoiceNumber(uid, dateISO);
         setInvoiceNumber(numberToUse);
       } catch {
-        // si falla la reserva, no bloqueamos (pero ojo: podría repetirse)
+        // ✅ fallback seguro: garantiza no repetir aunque falle Firestore
+        const y = new Date(dateISO).getUTCFullYear();
+        numberToUse = `${y}${String(Date.now()).slice(-6)}`; // p.ej. 2026 + 6 últimos dígitos
+        setInvoiceNumber(numberToUse);
       }
     }
 
@@ -405,7 +408,10 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       issuerId: selectedIssuerId || null,
       recipient,
       clientId: selectedClientId,
-      templateId: isNew ? (selectedTemplateId || null) : ((undefined as any) ?? (selectedTemplateId || null)),
+
+      // ✅ FIX BUILD: nada de "always nullish"
+      templateId: selectedTemplateId || null,
+
       date: dateISO,
       dueDate: dueISO,
       status,

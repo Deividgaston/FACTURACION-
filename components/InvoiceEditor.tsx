@@ -14,6 +14,18 @@ interface InvoiceEditorProps {
 // Cliente = Party + id (para selector y listado)
 type Client = Party & { id: string };
 
+const isFilled = (v: any) => {
+  const s = String(v ?? '').trim();
+  if (!s) return false;
+  if (s === '-' || s === '—') return false;
+  return true;
+};
+
+const isAddressComplete = (p?: Party | null) => {
+  const a = p?.address as any;
+  return !!a && isFilled(a.street) && isFilled(a.city) && isFilled(a.zip) && isFilled(a.country);
+};
+
 const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const [loading, setLoading] = useState(true);
 
@@ -206,9 +218,24 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const irpfAmount = (subtotal * irpfRate) / 100;
   const total = subtotal + vatAmount - irpfAmount;
 
+  const canIssue = isAddressComplete(issuer) && isAddressComplete(recipient);
+  const issueBlockedMsg = !isAddressComplete(issuer)
+    ? 'Falta la dirección completa del EMISOR (calle, ciudad, CP, país).'
+    : !isAddressComplete(recipient)
+      ? 'Falta la dirección completa del CLIENTE (calle, ciudad, CP, país).'
+      : '';
+
   const handleSave = async () => {
     if (!selectedClientId) {
       alert('Selecciona un cliente');
+      setStep(1);
+      return;
+    }
+
+    // ✅ No se puede emitir (ISSUED/PAID) si falta dirección
+    if (status !== 'DRAFT' && !canIssue) {
+      alert(issueBlockedMsg || 'No se puede emitir sin dirección completa.');
+      setStep(1);
       return;
     }
 
@@ -347,6 +374,13 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
             <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
               <h2 className="text-2xl font-bold text-slate-800">Seleccionar Cliente</h2>
 
+              {/* Aviso dirección */}
+              {!loading && !canIssue && (
+                <div className="p-4 rounded-2xl border border-amber-200 bg-amber-50 text-amber-800 text-sm font-semibold">
+                  {issueBlockedMsg} No podrás marcarla como <b>EMITIDA</b> o <b>PAGADA</b> hasta completarla.
+                </div>
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {/* Client */}
                 <div className="space-y-2">
@@ -405,14 +439,18 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
               <div className="p-6 bg-slate-50 rounded-2xl border border-dashed border-slate-300">
                 <h3 className="font-bold text-slate-800">{recipient.name}</h3>
                 <p className="text-sm text-slate-500">{recipient.taxId} | {recipient.email}</p>
-                <p className="text-sm text-slate-500">{recipient.address.street}, {recipient.address.city}</p>
+                <p className="text-sm text-slate-500">
+                  {recipient.address.street}, {recipient.address.city} ({recipient.address.zip}), {recipient.address.country}
+                </p>
 
                 <hr className="my-4 border-slate-200" />
 
                 <p className="text-xs text-slate-400 uppercase font-bold mb-1">Emisor</p>
                 <p className="font-bold text-slate-800">{issuer.name}</p>
                 <p className="text-sm text-slate-500">{issuer.taxId} | {issuer.email}</p>
-                <p className="text-sm text-slate-500">{issuer.address.street}, {issuer.address.city}</p>
+                <p className="text-sm text-slate-500">
+                  {issuer.address.street}, {issuer.address.city} ({issuer.address.zip}), {issuer.address.country}
+                </p>
               </div>
             </div>
           )}
@@ -498,24 +536,39 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
           {step === 4 && (
             <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
               <h2 className="text-2xl font-bold text-slate-800">Revisión Final</h2>
+
+              {/* Aviso si intentan emitir sin dirección */}
+              {!canIssue && (
+                <div className="p-4 rounded-2xl border border-amber-200 bg-amber-50 text-amber-800 text-sm font-semibold">
+                  {issueBlockedMsg} Solo podrás guardar como <b>DRAFT</b>.
+                </div>
+              )}
+
               <div className="flex gap-4">
                 <button
                   onClick={() => setStatus('PAID')}
+                  disabled={!canIssue}
                   className={`flex-1 py-3 rounded-xl border font-bold transition-all ${
-                    status === 'PAID' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-white text-slate-400'
-                  }`}
+                    status === 'PAID'
+                      ? 'bg-green-50 border-green-200 text-green-700'
+                      : 'bg-white text-slate-400'
+                  } ${!canIssue ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   PAGADA
                 </button>
                 <button
                   onClick={() => setStatus('ISSUED')}
+                  disabled={!canIssue}
                   className={`flex-1 py-3 rounded-xl border font-bold transition-all ${
-                    status === 'ISSUED' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white text-slate-400'
-                  }`}
+                    status === 'ISSUED'
+                      ? 'bg-blue-50 border-blue-200 text-blue-700'
+                      : 'bg-white text-slate-400'
+                  } ${!canIssue ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   EMITIDA
                 </button>
               </div>
+
               <p className="text-center text-slate-400 text-sm">
                 Previsualización debajo. Dale a Imprimir para generar el PDF.
               </p>
@@ -562,6 +615,9 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
             <p className="font-bold">{recipient.name}</p>
             <p className="text-sm text-slate-500">{recipient.taxId}</p>
             <p className="text-sm text-slate-500">{recipient.address.street}</p>
+            <p className="text-sm text-slate-500">
+              {recipient.address.zip} {recipient.address.city}, {recipient.address.country}
+            </p>
           </div>
           <div className="text-right">
             <p className="text-[10px] font-bold text-slate-400 uppercase mb-2">{t.date}</p>

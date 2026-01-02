@@ -123,6 +123,24 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     return { s, issuersList, active };
   };
 
+  const subtotal = items.reduce((acc, item) => acc + item.amount, 0);
+  const vatAmount = (subtotal * vatRate) / 100;
+  const irpfAmount = (subtotal * irpfRate) / 100;
+  const total = subtotal + vatAmount - irpfAmount;
+
+  const canIssue = isAddressComplete(issuer) && isAddressComplete(recipient);
+  const issueBlockedMsg = !isAddressComplete(issuer)
+    ? 'Falta la dirección completa del EMISOR (calle, ciudad, CP, país).'
+    : !isAddressComplete(recipient)
+      ? 'Falta la dirección completa del CLIENTE (calle, ciudad, CP, país).'
+      : '';
+
+  // ✅ FIX mínimo: si faltan direcciones, no permitimos mantener ISSUED/PAID (evita “bloqueo” de guardado)
+  useEffect(() => {
+    if (!canIssue && status !== 'DRAFT') setStatus('DRAFT');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canIssue]);
+
   // Load once: settings+clients, luego invoice (si edit)
   useEffect(() => {
     let alive = true;
@@ -151,17 +169,17 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
           setRecipient(inv.recipient);
           setLang(inv.lang);
           setInvoiceNumber(inv.number);
-          setSelectedClientId(inv.clientId || '');
+          setSelectedClientId((inv as any).clientId || '');
 
           // snapshot histórico
-          setIssuer(inv.issuer);
+          setIssuer((inv as any).issuer);
 
           // issuerId guardado en factura (FASE 3)
           const invIssuerId = (inv as any).issuerId as string | undefined;
           if (invIssuerId) {
             setSelectedIssuerId(invIssuerId);
           } else {
-            const match = issuersList.find(i => i.taxId === inv.issuer.taxId && i.name === inv.issuer.name);
+            const match = issuersList.find(i => i.taxId === (inv as any).issuer.taxId && i.name === (inv as any).issuer.name);
             if (match) setSelectedIssuerId(match.id);
           }
 
@@ -212,18 +230,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       });
     }
   };
-
-  const subtotal = items.reduce((acc, item) => acc + item.amount, 0);
-  const vatAmount = (subtotal * vatRate) / 100;
-  const irpfAmount = (subtotal * irpfRate) / 100;
-  const total = subtotal + vatAmount - irpfAmount;
-
-  const canIssue = isAddressComplete(issuer) && isAddressComplete(recipient);
-  const issueBlockedMsg = !isAddressComplete(issuer)
-    ? 'Falta la dirección completa del EMISOR (calle, ciudad, CP, país).'
-    : !isAddressComplete(recipient)
-      ? 'Falta la dirección completa del CLIENTE (calle, ciudad, CP, país).'
-      : '';
 
   const handleSave = async () => {
     if (!selectedClientId) {

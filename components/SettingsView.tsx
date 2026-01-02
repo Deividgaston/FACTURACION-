@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Save, Shield, Briefcase, LogOut, Plus, Trash2, Check, Mail } from 'lucide-react';
 import { store } from '../lib/store';
 import { Issuer, AppSettings } from '../types';
@@ -23,6 +23,12 @@ const settingsRef = (uid: string) => doc(db, 'settings', uid);
 const isAddressComplete = (a: any) =>
   !!a?.street?.trim() && !!a?.city?.trim() && !!a?.zip?.trim() && !!a?.country?.trim();
 
+const formatFsError = (e: any) => {
+  const code = e?.code ? String(e.code) : 'unknown';
+  const msg = e?.message ? String(e.message) : String(e);
+  return `Firestore: ${code} — ${msg}`;
+};
+
 const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
   const [issuers, setIssuers] = useState<Issuer[]>([]);
   const [activeId, setActiveId] = useState<string>('');
@@ -35,20 +41,17 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
   const [fsError, setFsError] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(true);
 
-  // ✅ evita re-volcar settings a Firestore en cada cambio de auth
-  const ensuredToFsRef = useRef(false);
-
   const applySettingsToState = (s: AppSettings) => {
     setIssuers(s.issuers || []);
     setActiveId(s.activeIssuerId || (s.issuers?.[0]?.id || ''));
   };
 
-  // ✅ uid explícito para no depender de auth.currentUser (que tarda en hidratar)
+  // ✅ uid explícito para no depender de auth.currentUser
   const loadSettingsOnce = async (uid?: string | null) => {
     setLoading(true);
     setFsError('');
 
-    // Si no hay uid, mostramos local (rápido)
+    // pinta rápido desde local
     if (!uid) {
       applySettingsToState(store.getSettings());
       setLoading(false);
@@ -74,7 +77,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
         return;
       }
 
-      // No existe doc en FS -> subimos local a FS (1 write)
+      // No existe doc -> subimos local a FS
       const local = store.getSettings();
       applySettingsToState(local);
 
@@ -83,8 +86,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
     } catch (e) {
       console.error('Settings Firestore load failed:', e);
       applySettingsToState(store.getSettings());
-      // No mostramos banner si estamos bien con local
-      setFsError('');
+      setFsError(formatFsError(e)); // ✅ ahora lo ves
     } finally {
       setLoading(false);
     }
@@ -102,40 +104,21 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
       setFsError('');
     } catch (e) {
       console.error('Settings Firestore write failed:', e);
-      setFsError('No se pudieron guardar los ajustes en Firestore (se guardaron en local).');
+      setFsError(formatFsError(e)); // ✅ ahora lo ves
     }
   };
 
   useEffect(() => {
-    // 1) pinta algo rápido desde local
     loadSettingsOnce(null);
 
-    // 2) cuando Auth esté listo, aseguramos que haya doc en Firestore y luego cargamos
-    const unsub = onAuthStateChanged(auth, async (user) => {
-      const uid = user?.uid || null;
-      if (!uid) return;
-
-      // ✅ Volcado inicial a Firestore (una vez por sesión) para que NO dependa de “escribir algo”
-      if (!ensuredToFsRef.current) {
-        ensuredToFsRef.current = true;
-        try {
-          const local = store.getSettings();
-          await setDoc(settingsRef(uid), { ...local, updatedAt: serverTimestamp() }, { merge: true });
-          setFsError('');
-        } catch (e) {
-          console.error('Settings Firestore ensure failed:', e);
-          setFsError('No se pudieron guardar los ajustes en Firestore (se guardaron en local).');
-        }
-      }
-
-      await loadSettingsOnce(uid);
+    const unsub = onAuthStateChanged(auth, (user) => {
+      loadSettingsOnce(user?.uid || null);
     });
 
     return () => unsub();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---- Issuers CRUD
   const addIssuer = async () => {
     if (!newIssuer.name?.trim() || !newIssuer.taxId?.trim()) {
       alert('Nombre y NIF son obligatorios');
@@ -185,7 +168,6 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
     await saveSettingsEverywhere(next);
   };
 
-  // ---- Firebase password reset
   const handlePasswordReset = async () => {
     setResetSent(false);
     setResetError('');
@@ -219,7 +201,6 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
         </div>
       )}
 
-      {/* ISSUERS */}
       <section className="bg-white rounded-3xl border shadow-sm">
         <div className="p-6 border-b flex items-center gap-3">
           <Briefcase className="text-indigo-600" />
@@ -268,7 +249,6 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
             </div>
           ))}
 
-          {/* NEW ISSUER */}
           <div className="border-t pt-6 space-y-4">
             <h3 className="font-bold">Nuevo emisor</h3>
 
@@ -342,7 +322,6 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
         </div>
       </section>
 
-      {/* EDIT MODAL */}
       {editing && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center">
           <div className="bg-white rounded-2xl p-6 w-full max-w-md space-y-4">
@@ -417,7 +396,6 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
         </div>
       )}
 
-      {/* SECURITY */}
       <section className="bg-white rounded-3xl border shadow-sm p-6 space-y-4">
         <h2 className="font-bold flex items-center gap-2">
           <Shield className="text-indigo-600" /> Seguridad

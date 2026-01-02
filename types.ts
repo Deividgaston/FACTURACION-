@@ -49,20 +49,28 @@ export interface InvoiceTemplate {
 export interface Invoice {
   id: string;
   number: string;
-  issuer: Party;     // snapshot stored per invoice (keeps history stable)
-  recipient: Party;  // normalmente será un Client, pero se guarda como Party (snapshot)
+
+  issuer: Party;      // snapshot stored per invoice (keeps history stable)
+  issuerId?: string | null; // ✅ FASE 3: emisor seleccionado (para filtros/listados)
+
+  recipient: Party;   // snapshot (normalmente proviene de Client)
   clientId: string;
+
   templateId?: string;
   date: string;
   dueDate: string;
   status: InvoiceStatus;
   lang: Language;
+
   items: InvoiceItem[];
   subtotal: number;
+
   vatRate: number;
   vatAmount: number;
+
   irpfRate: number;
   irpfAmount: number;
+
   total: number;
   isRecurring: boolean;
   notes?: string;

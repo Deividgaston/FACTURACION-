@@ -30,15 +30,19 @@ const isAddressComplete = (p?: Party | null) => {
   return !!a && isFilled(a.street) && isFilled(a.city) && isFilled(a.zip) && isFilled(a.country);
 };
 
+const safeNum = (v: any, fallback = 0) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+
 const safeItemsFromTemplate = (tpl: any): InvoiceItem[] => {
   const arr = Array.isArray(tpl?.items) ? tpl.items : [];
-  // Garantiza ids y amounts coherentes
   return arr.map((it: any, idx: number) => {
     const id = String(it?.id || `tpl_${idx}_${Date.now().toString()}`);
     const description = String(it?.description ?? '').trim();
-    const quantity = Number(it?.quantity ?? 1);
-    const unitCost = Number(it?.unitCost ?? 0);
-    const amount = Number.isFinite(Number(it?.amount)) ? Number(it.amount) : quantity * unitCost;
+    const quantity = safeNum(it?.quantity, 1);
+    const unitCost = safeNum(it?.unitCost, 0);
+    const amount = safeNum(it?.amount, quantity * unitCost);
     return { id, description, quantity, unitCost, amount } as InvoiceItem;
   });
 };
@@ -98,7 +102,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     setIssuers(list);
     setActiveIssuerId(active);
 
-    // si todavía no hay seleccionado, seteamos el activo
     setSelectedIssuerId((prev) => prev || active || (list[0]?.id || ''));
 
     const activeIssuer = list.find((i) => i.id === active) || list[0];
@@ -131,17 +134,16 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         yearCounter: data.yearCounter || { [new Date().getFullYear()]: 1 }
       };
     } else {
-      // fallback: lo que haya en local
       s = store.getSettings();
     }
 
     const { list: issuersList, active } = applySettings(s);
 
-    // 2) clients (1 query por pantalla, cacheable)
+    // 2) clients
     const cl = await store.loadClientsOnce(uid);
     setClients(cl as Client[]);
 
-    // 3) templates (1 query por pantalla, cacheable)
+    // 3) templates
     await store.migrateLocalTemplatesToFirestoreOnce(uid);
     const tpl = await store.loadTemplatesOnce(uid);
     setTemplates((Array.isArray(tpl) ? (tpl as any[]) : []) as Template[]);
@@ -149,9 +151,9 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     return { s, issuersList, active };
   };
 
-  const subtotal = items.reduce((acc, item) => acc + item.amount, 0);
-  const vatAmount = (subtotal * vatRate) / 100;
-  const irpfAmount = (subtotal * irpfRate) / 100;
+  const subtotal = items.reduce((acc, item) => acc + safeNum(item.amount, 0), 0);
+  const vatAmount = (subtotal * safeNum(vatRate, 0)) / 100;
+  const irpfAmount = (subtotal * safeNum(irpfRate, 0)) / 100;
   const total = subtotal + vatAmount - irpfAmount;
 
   const canIssue = isAddressComplete(issuer) && isAddressComplete(recipient);
@@ -161,7 +163,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       ? 'Falta la dirección completa del CLIENTE (calle, ciudad, CP, país).'
       : '';
 
-  // ✅ FIX mínimo: si faltan direcciones, no permitimos mantener ISSUED/PAID
   useEffect(() => {
     if (!canIssue && status !== 'DRAFT') setStatus('DRAFT');
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -170,29 +171,23 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const applyTemplateToInvoice = (tpl: Template | null) => {
     if (!tpl) return;
 
-    // idioma
     if (tpl.lang === 'EN' || tpl.lang === 'ES') setLang(tpl.lang as Language);
 
-    // items
     const tplItems = safeItemsFromTemplate(tpl as any);
     if (tplItems.length) {
       setItems(tplItems);
     } else {
-      // si la plantilla no tiene líneas, mantenemos una por defecto
       setItems([{ id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }]);
     }
 
-    // impuestos
-    const vr = Number((tpl as any).vatRate);
-    const ir = Number((tpl as any).irpfRate);
-    if (Number.isFinite(vr)) setVatRate(vr);
-    if (Number.isFinite(ir)) setIrpfRate(ir);
+    const vr = safeNum((tpl as any).vatRate, 21);
+    const ir = safeNum((tpl as any).irpfRate, 15);
+    setVatRate(vr);
+    setIrpfRate(ir);
 
-    // estado: siempre DRAFT al aplicar plantilla
     setStatus('DRAFT');
   };
 
-  // ✅ Esperar a Auth
   useEffect(() => {
     let alive = true;
     let ranForUid: string | null = null;
@@ -207,27 +202,24 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         const { s, issuersList, active } = await loadAllOnce(uid);
         if (!alive) return;
 
-        // EDIT existing
+        // EDIT
         if (invoiceId && invoiceId !== 'new') {
           const inv = await store.getInvoice(uid, invoiceId);
           if (!alive || !inv) return;
 
-          setItems(inv.items);
-          setVatRate(inv.vatRate);
-          setIrpfRate(inv.irpfRate);
+          setItems(Array.isArray(inv.items) ? inv.items : []);
+          setVatRate(safeNum(inv.vatRate, 21));
+          setIrpfRate(safeNum(inv.irpfRate, 15));
           setStatus(inv.status);
           setRecipient(inv.recipient);
           setLang(inv.lang);
           setInvoiceNumber(inv.number);
           setSelectedClientId((inv as any).clientId || '');
 
-          // snapshot histórico
           setIssuer((inv as any).issuer);
 
-          // templateId histórico (solo para mostrarlo si quieres)
           setSelectedTemplateId((inv as any).templateId || '');
 
-          // issuerId guardado en factura
           const invIssuerId = (inv as any).issuerId as string | undefined;
           if (invIssuerId) {
             setSelectedIssuerId(invIssuerId);
@@ -247,7 +239,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
         setInvoiceNumber(`${year}${current.toString().padStart(4, '0')}`);
 
-        // defaults
         setItems([{ id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }]);
         setVatRate(21);
         setIrpfRate(15);
@@ -267,7 +258,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
           });
         }
 
-        // plantilla por defecto: ninguna
         setSelectedTemplateId('');
       } finally {
         if (alive) setLoading(false);
@@ -294,7 +284,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [invoiceId]);
 
-  // When user changes issuer in UI, update snapshot
   const handleIssuerChange = (issuerId: string) => {
     setSelectedIssuerId(issuerId);
     const iss = issuers.find((i) => i.id === issuerId);
@@ -312,7 +301,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     setSelectedTemplateId(tplId);
 
     if (!tplId) {
-      // “Sin plantilla” -> no tocamos cliente/emisor. Restauramos solo defaults razonables.
       setItems([{ id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }]);
       setVatRate(21);
       setIrpfRate(15);
@@ -332,7 +320,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       return;
     }
 
-    // ✅ No se puede emitir (ISSUED/PAID) si falta dirección
     if (status !== 'DRAFT' && !canIssue) {
       alert(issueBlockedMsg || 'No se puede emitir sin dirección completa.');
       setStep(1);
@@ -350,11 +337,11 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     const newInvoice: any = {
       id,
       number: invoiceNumber,
-      issuer, // snapshot
+      issuer,
       issuerId: selectedIssuerId || null,
       recipient,
       clientId: selectedClientId,
-      templateId: invoiceId ? ((newInvoice as any)?.templateId || selectedTemplateId || null) : (selectedTemplateId || null),
+      templateId: selectedTemplateId || null,
       date: new Date().toISOString(),
       dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
       status,
@@ -371,7 +358,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
     await store.saveInvoice(uid, newInvoice as Invoice, { issuerId: selectedIssuerId });
 
-    // Incremento yearCounter en Firestore para nuevas facturas
     if (invoiceId === 'new') {
       try {
         const sSnap = await getDoc(settingsRef(uid));
@@ -389,7 +375,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
           { merge: true }
         );
       } catch {
-        // si falla el contador remoto, no rompemos guardado de factura
+        // noop
       }
     }
 
@@ -403,30 +389,47 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     ]);
   };
 
+  // ✅ FIX: guardar SIEMPRE números en quantity/unitCost/amount (evita crash por toFixed)
   const updateItem = (id: string, field: keyof InvoiceItem, value: string | number) => {
     setItems(
       items.map((item) => {
-        if (item.id === id) {
-          const updated: InvoiceItem = { ...item, [field]: value as any } as InvoiceItem;
-          if (field === 'quantity' || field === 'unitCost') {
-            const q = Number(field === 'quantity' ? value : updated.quantity);
-            const u = Number(field === 'unitCost' ? value : updated.unitCost);
-            updated.amount = q * u;
-          }
+        if (item.id !== id) return item;
+
+        const updated: InvoiceItem = { ...item };
+
+        if (field === 'quantity') {
+          const q = safeNum(value, 0);
+          const u = safeNum(updated.unitCost, 0);
+          updated.quantity = q;
+          updated.amount = q * u;
           return updated;
         }
-        return item;
+
+        if (field === 'unitCost') {
+          const u = safeNum(value, 0);
+          const q = safeNum(updated.quantity, 0);
+          updated.unitCost = u;
+          updated.amount = q * u;
+          return updated;
+        }
+
+        if (field === 'amount') {
+          updated.amount = safeNum(value, 0);
+          return updated;
+        }
+
+        // description u otros
+        (updated as any)[field] = value as any;
+        return updated;
       })
     );
   };
 
   const t = TRANSLATIONS[lang];
-
   const isNew = !invoiceId || invoiceId === 'new';
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
-      {/* Estilos de Impresión */}
       <style>{`
         @media print {
           body * { visibility: hidden; }
@@ -476,9 +479,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
             >
               {step > s ? <CheckCircle size={16} /> : s}
             </div>
-            <span
-              className={`text-sm font-semibold ${step === s ? 'text-slate-800' : 'text-slate-400'}`}
-            >
+            <span className={`text-sm font-semibold ${step === s ? 'text-slate-800' : 'text-slate-400'}`}>
               {s === 1 ? 'Cliente' : s === 2 ? 'Líneas' : s === 3 ? 'Impuestos' : 'Revisión'}
             </span>
             {s < 4 && <div className="w-12 h-px bg-slate-100 mx-2"></div>}
@@ -499,7 +500,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
               )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* Client */}
                 <div className="space-y-2">
                   <label className="text-sm font-semibold text-slate-600">Cliente</label>
                   <select
@@ -526,13 +526,10 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   </select>
 
                   {!loading && clients.length === 0 && (
-                    <p className="text-xs text-slate-400">
-                      No hay clientes cargados (o aún no se han leído de Firestore).
-                    </p>
+                    <p className="text-xs text-slate-400">No hay clientes cargados (o aún no se han leído de Firestore).</p>
                   )}
                 </div>
 
-                {/* Invoice number */}
                 <div className="space-y-2">
                   <label className="text-sm font-semibold text-slate-600">Nº Factura</label>
                   <input
@@ -543,7 +540,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   />
                 </div>
 
-                {/* Issuer */}
                 <div className="space-y-2 md:col-span-2">
                   <label className="text-sm font-semibold text-slate-600">Emisor</label>
                   <select
@@ -560,7 +556,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   </select>
                 </div>
 
-                {/* Template (solo NEW) */}
                 {isNew && (
                   <div className="space-y-2 md:col-span-2">
                     <label className="text-sm font-semibold text-slate-600">Plantilla (opcional)</label>
@@ -591,8 +586,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   {recipient.taxId} | {recipient.email}
                 </p>
                 <p className="text-sm text-slate-500">
-                  {recipient.address.street}, {recipient.address.city} ({recipient.address.zip}),{' '}
-                  {recipient.address.country}
+                  {recipient.address.street}, {recipient.address.city} ({recipient.address.zip}), {recipient.address.country}
                 </p>
 
                 <hr className="my-4 border-slate-200" />
@@ -620,6 +614,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   <Plus size={16} /> Añadir Línea
                 </button>
               </div>
+
               <div className="space-y-4">
                 {items.map((item) => (
                   <div key={item.id} className="grid grid-cols-12 gap-3 items-end p-4 bg-slate-50 rounded-2xl">
@@ -648,7 +643,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                       />
                     </div>
                     <div className="col-span-4 md:col-span-2 font-bold text-right text-slate-800">
-                      {item.amount.toFixed(2)}€
+                      {safeNum(item.amount, 0).toFixed(2)}€
                     </div>
                   </div>
                 ))}
@@ -665,7 +660,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   <input
                     type="number"
                     value={vatRate}
-                    onChange={(e) => setVatRate(Number(e.target.value))}
+                    onChange={(e) => setVatRate(safeNum(e.target.value, 0))}
                     className="w-20 px-3 py-2 rounded-lg border border-slate-200 text-right outline-none font-bold"
                   />
                 </div>
@@ -674,14 +669,14 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   <input
                     type="number"
                     value={irpfRate}
-                    onChange={(e) => setIrpfRate(Number(e.target.value))}
+                    onChange={(e) => setIrpfRate(safeNum(e.target.value, 0))}
                     className="w-20 px-3 py-2 rounded-lg border border-slate-200 text-right outline-none font-bold"
                   />
                 </div>
                 <hr className="border-slate-200" />
                 <div className="flex justify-between items-center text-slate-800 font-black pt-4 border-t border-slate-200">
                   <span className="text-lg uppercase">Total Factura</span>
-                  <span className="text-2xl text-indigo-700">{total.toLocaleString()} €</span>
+                  <span className="text-2xl text-indigo-700">{safeNum(total, 0).toLocaleString()} €</span>
                 </div>
               </div>
             </div>
@@ -702,9 +697,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   onClick={() => setStatus('PAID')}
                   disabled={!canIssue}
                   className={`flex-1 py-3 rounded-xl border font-bold transition-all ${
-                    status === 'PAID'
-                      ? 'bg-green-50 border-green-200 text-green-700'
-                      : 'bg-white text-slate-400'
+                    status === 'PAID' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-white text-slate-400'
                   } ${!canIssue ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   PAGADA
@@ -713,9 +706,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   onClick={() => setStatus('ISSUED')}
                   disabled={!canIssue}
                   className={`flex-1 py-3 rounded-xl border font-bold transition-all ${
-                    status === 'ISSUED'
-                      ? 'bg-blue-50 border-blue-200 text-blue-700'
-                      : 'bg-white text-slate-400'
+                    status === 'ISSUED' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white text-slate-400'
                   } ${!canIssue ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   EMITIDA
@@ -749,7 +740,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         </div>
       </div>
 
-      {/* Area Imprimible */}
       <div className={`printable-area bg-white p-12 border rounded shadow-sm ${step === 4 ? 'block' : 'hidden'}`}>
         <div className="flex justify-between mb-12">
           <div>
@@ -791,9 +781,9 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
             {items.map((item) => (
               <tr key={item.id} className="text-sm">
                 <td className="py-4 font-medium">{item.description}</td>
-                <td className="py-4 text-right">{item.unitCost.toFixed(2)} €</td>
-                <td className="py-4 text-right">{item.quantity}</td>
-                <td className="py-4 text-right font-bold">{item.amount.toFixed(2)} €</td>
+                <td className="py-4 text-right">{safeNum(item.unitCost, 0).toFixed(2)} €</td>
+                <td className="py-4 text-right">{safeNum(item.quantity, 0)}</td>
+                <td className="py-4 text-right font-bold">{safeNum(item.amount, 0).toFixed(2)} €</td>
               </tr>
             ))}
           </tbody>
@@ -803,23 +793,23 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
           <div className="w-64 space-y-2">
             <div className="flex justify-between text-sm text-slate-500 uppercase">
               <span>{t.subtotal}</span>
-              <span>{subtotal.toFixed(2)} €</span>
+              <span>{safeNum(subtotal, 0).toFixed(2)} €</span>
             </div>
             <div className="flex justify-between text-sm text-slate-500 uppercase">
               <span>
-                {t.vat} ({vatRate}%)
+                {t.vat} ({safeNum(vatRate, 0)}%)
               </span>
-              <span>{vatAmount.toFixed(2)} €</span>
+              <span>{safeNum(vatAmount, 0).toFixed(2)} €</span>
             </div>
             <div className="flex justify-between text-sm text-slate-500 uppercase">
               <span>
-                {t.irpf} (-{irpfRate}%)
+                {t.irpf} (-{safeNum(irpfRate, 0)}%)
               </span>
-              <span>- {irpfAmount.toFixed(2)} €</span>
+              <span>- {safeNum(irpfAmount, 0).toFixed(2)} €</span>
             </div>
             <div className="flex justify-between pt-4 border-t-2 border-slate-900 font-black text-lg">
               <span>TOTAL</span>
-              <span>{total.toFixed(2)} €</span>
+              <span>{safeNum(total, 0).toFixed(2)} €</span>
             </div>
           </div>
         </div>

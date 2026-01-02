@@ -2,17 +2,20 @@ import React, { useState, useEffect } from 'react';
 import { Mail, MapPin, UserPlus, Trash2 } from 'lucide-react';
 import { store } from '../lib/store';
 import { auth } from '../lib/firebase';
+import type { Client } from '../types';
+
+const emptyClient = (): Omit<Client, 'id'> => ({
+  name: '',
+  taxId: '',
+  email: '',
+  address: { street: '', city: '', zip: '', country: 'España' }
+});
 
 const ClientList: React.FC = () => {
-  const [clients, setClients] = useState<any[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
-  const [newClient, setNewClient] = useState<any>({
-    name: '',
-    taxId: '',
-    email: '',
-    address: { street: '', city: '', zip: '', country: 'España' }
-  });
+  const [newClient, setNewClient] = useState<Omit<Client, 'id'>>(emptyClient());
 
   // 1 query por pantalla (y si está cacheado, 0 lecturas)
   useEffect(() => {
@@ -31,7 +34,7 @@ const ClientList: React.FC = () => {
         await store.migrateLocalClientsToFirestoreOnce(uid);
 
         const list = await store.loadClientsOnce(uid);
-        if (alive) setClients(list as any[]);
+        if (alive) setClients(list as Client[]);
       } finally {
         if (alive) setLoading(false);
       }
@@ -49,7 +52,7 @@ const ClientList: React.FC = () => {
     const uid = auth.currentUser?.uid;
     if (!uid) return;
 
-    const clientToSave = { ...newClient, id: Date.now().toString() };
+    const clientToSave: Client = { ...newClient, id: Date.now().toString() };
 
     // UI optimista
     setClients(prev => [clientToSave, ...prev]);
@@ -57,15 +60,10 @@ const ClientList: React.FC = () => {
     try {
       await store.saveClient(uid, clientToSave);
       setShowAdd(false);
-      setNewClient({
-        name: '',
-        taxId: '',
-        email: '',
-        address: { street: '', city: '', zip: '', country: 'España' }
-      });
+      setNewClient(emptyClient());
     } catch {
       const list = await store.loadClientsOnce(uid, { force: true });
-      setClients(list as any[]);
+      setClients(list as Client[]);
     }
   };
 
@@ -80,7 +78,7 @@ const ClientList: React.FC = () => {
       await store.deleteClient(uid, id);
     } catch {
       const list = await store.loadClientsOnce(uid, { force: true });
-      setClients(list as any[]);
+      setClients(list as Client[]);
     }
   };
 
@@ -89,9 +87,7 @@ const ClientList: React.FC = () => {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold text-slate-800">Clientes</h1>
-          <p className="text-slate-500">
-            Gestiona tus contactos. Aparecerán en el selector de facturas.
-          </p>
+          <p className="text-slate-500">Gestiona tus contactos. Aparecerán en el selector de facturas.</p>
         </div>
         <button
           onClick={() => setShowAdd(true)}
@@ -136,16 +132,10 @@ const ClientList: React.FC = () => {
             />
           </div>
           <div className="flex justify-end gap-2">
-            <button
-              onClick={() => setShowAdd(false)}
-              className="px-4 py-2 text-slate-400"
-            >
+            <button onClick={() => setShowAdd(false)} className="px-4 py-2 text-slate-400">
               Cancelar
             </button>
-            <button
-              onClick={handleAdd}
-              className="px-6 py-2 bg-indigo-600 text-white rounded-xl font-bold"
-            >
+            <button onClick={handleAdd} className="px-6 py-2 bg-indigo-600 text-white rounded-xl font-bold">
               Guardar Cliente
             </button>
           </div>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { NAVIGATION } from './constants';
 import Dashboard from './components/Dashboard';
 import InvoiceList from './components/InvoiceList';
@@ -17,6 +17,9 @@ import { auth } from './lib/firebase';
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
+
+// ✅ key para “crear factura desde plantilla” sin tocar props todavía
+const LS_NEW_INVOICE_TEMPLATE_ID = 'si_new_invoice_template_id';
 
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -42,6 +45,21 @@ const App: React.FC = () => {
     }
   };
 
+  // ✅ Centraliza el “crear nueva factura”
+  const startNewInvoice = useCallback((templateId?: string | null) => {
+    if (templateId) {
+      localStorage.setItem(LS_NEW_INVOICE_TEMPLATE_ID, templateId);
+    } else {
+      localStorage.removeItem(LS_NEW_INVOICE_TEMPLATE_ID);
+    }
+    setEditingInvoiceId('new');
+  }, []);
+
+  const exitEditor = useCallback(() => {
+    setEditingInvoiceId(null);
+    localStorage.removeItem(LS_NEW_INVOICE_TEMPLATE_ID);
+  }, []);
+
   // Evita parpadeo: esperamos a que Firebase diga si hay sesión o no
   if (!authReady) {
     return (
@@ -59,7 +77,7 @@ const App: React.FC = () => {
     if (editingInvoiceId !== null) {
       return (
         <InvoiceEditor
-          onBack={() => setEditingInvoiceId(null)}
+          onBack={exitEditor}
           invoiceId={editingInvoiceId === 'new' ? undefined : editingInvoiceId}
         />
       );
@@ -69,7 +87,7 @@ const App: React.FC = () => {
       case 'dashboard':
         return (
           <Dashboard
-            onNewInvoice={() => setEditingInvoiceId('new')}
+            onNewInvoice={() => startNewInvoice(null)}
             onEditInvoice={(id) => setEditingInvoiceId(id)}
           />
         );
@@ -77,19 +95,21 @@ const App: React.FC = () => {
         return (
           <InvoiceList
             onEdit={(id) => setEditingInvoiceId(id)}
-            onNew={() => setEditingInvoiceId('new')}
+            onNew={() => startNewInvoice(null)}
           />
         );
       case 'clients':
         return <ClientList />;
       case 'templates':
+        // ✅ de momento TemplateList no recibe props.
+        // En el siguiente archivo, le añadiremos un callback para usar: startNewInvoice(templateId)
         return <TemplateList />;
       case 'settings':
         return <SettingsView onLogout={handleLogout} />;
       default:
         return (
           <Dashboard
-            onNewInvoice={() => setEditingInvoiceId('new')}
+            onNewInvoice={() => startNewInvoice(null)}
             onEditInvoice={(id) => setEditingInvoiceId(id)}
           />
         );
@@ -113,6 +133,7 @@ const App: React.FC = () => {
               onClick={() => {
                 setActiveTab(item.path);
                 setEditingInvoiceId(null);
+                localStorage.removeItem(LS_NEW_INVOICE_TEMPLATE_ID);
               }}
               className={cn(
                 'w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium',
@@ -129,7 +150,7 @@ const App: React.FC = () => {
 
         <div className="mt-auto pt-6 space-y-3">
           <button
-            onClick={() => setEditingInvoiceId('new')}
+            onClick={() => startNewInvoice(null)}
             className="w-full flex items-center justify-center gap-2 bg-indigo-600 text-white py-3 rounded-xl font-semibold shadow-lg shadow-indigo-200 hover:bg-indigo-700 active:scale-95 transition-all"
           >
             <PlusCircle size={20} />
@@ -167,6 +188,7 @@ const App: React.FC = () => {
               onClick={() => {
                 setActiveTab(item.path);
                 setEditingInvoiceId(null);
+                localStorage.removeItem(LS_NEW_INVOICE_TEMPLATE_ID);
               }}
               className={cn(
                 'flex flex-col items-center p-2 rounded-lg transition-all',
@@ -206,6 +228,7 @@ const App: React.FC = () => {
                   onClick={() => {
                     setActiveTab(item.path);
                     setEditingInvoiceId(null);
+                    localStorage.removeItem(LS_NEW_INVOICE_TEMPLATE_ID);
                     setIsSidebarOpen(false);
                   }}
                   className={cn(

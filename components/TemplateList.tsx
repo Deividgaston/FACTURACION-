@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Plus, LayoutTemplate, RotateCw, Globe, Trash2 } from 'lucide-react';
 import { store } from '../lib/store';
-import { auth } from '../lib/firebase';
-import type { InvoiceTemplate, Client, Issuer, InvoiceItem, Party } from '../types';
+import { auth, db } from '../lib/firebase';
+import { onAuthStateChanged } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
+import type { InvoiceTemplate, Client, Issuer, InvoiceItem, Party, AppSettings } from '../types';
 
 type Template = InvoiceTemplate & { id: string };
 
@@ -35,29 +37,58 @@ const pickIndex = (title: string, options: string[], defaultIndex = 0): number |
 };
 
 const TemplateList: React.FC = () => {
+  const [uid, setUid] = useState<string>('');
+
   const [templates, setTemplates] = useState<Template[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
   const [issuers, setIssuers] = useState<Issuer[]>([]);
   const [loading, setLoading] = useState(true);
   const [fsError, setFsError] = useState<string>('');
 
-  const uid = auth.currentUser?.uid || '';
+  // ✅ FIX: uid reactivo (auth.currentUser no dispara rerender)
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setUid(user?.uid || '');
+    });
+    return () => unsub();
+  }, []);
+
+  const loadIssuers = async (uid: string) => {
+    // 1) intenta Firestore settings
+    try {
+      const sRef = doc(db, 'settings', uid);
+      const sSnap = await getDoc(sRef);
+      if (sSnap.exists()) {
+        const data = sSnap.data() as any as AppSettings;
+        const list = Array.isArray((data as any)?.issuers) ? ((data as any).issuers as Issuer[]) : [];
+        if (list.length) return list;
+      }
+    } catch {
+      // ignore -> fallback
+    }
+
+    // 2) fallback local
+    try {
+      const local = store.getIssuers?.() || [];
+      return Array.isArray(local) ? (local as Issuer[]) : [];
+    } catch {
+      return [];
+    }
+  };
 
   const reload = async (force = false) => {
     if (!uid) {
       setLoading(false);
       return;
     }
+
     setLoading(true);
     setFsError('');
+
     try {
-      // 0) issuers (local settings)
-      try {
-        const iss = store.getIssuers?.() || [];
-        setIssuers(Array.isArray(iss) ? (iss as Issuer[]) : []);
-      } catch {
-        setIssuers([]);
-      }
+      // 0) issuers
+      const iss = await loadIssuers(uid);
+      setIssuers(iss);
 
       // 1) clients (1 query por pantalla)
       try {
@@ -97,34 +128,33 @@ const TemplateList: React.FC = () => {
       return null;
     }
     const issuerLabels = issuers.map((i) => (i.alias ? `${i.alias} — ${i.name}` : i.name));
-    const issuerDefaultIdx = Math.max(
-      0,
-      issuers.findIndex((i) => i.id === (base as any)?.issuerId)
-    );
+    const issuerDefaultIdx = Math.max(0, issuers.findIndex((i) => i.id === (base as any)?.issuerId));
     const issuerIdx = pickIndex('Selecciona EMISOR', issuerLabels, issuerDefaultIdx);
     if (issuerIdx === null) return null;
     const issuer = issuers[issuerIdx];
 
-    // cliente/receptor
+    // receptor (cliente)
     if (!clients.length) {
       alert('No hay clientes. Crea primero un cliente.');
       return null;
     }
     const clientLabels = clients.map((c) => `${c.name} (${c.taxId || '—'})`);
-    const clientDefaultIdx = Math.max(
-      0,
-      clients.findIndex((c) => c.id === (base as any)?.clientId)
-    );
+    const clientDefaultIdx = Math.max(0, clients.findIndex((c) => c.id === (base as any)?.clientId));
     const clientIdx = pickIndex('Selecciona RECEPTOR (cliente)', clientLabels, clientDefaultIdx);
     if (clientIdx === null) return null;
     const client = clients[clientIdx];
 
-    // línea (concepto + qty + precio)
-    const desc = window.prompt('Concepto / descripción:', String((base as any)?.items?.[0]?.description || '')) ?? '';
+    // 1 línea (concepto + qty + precio)
+    const desc = window.prompt(
+      'Concepto / descripción:',
+      String((base as any)?.items?.[0]?.description || '')
+    ) ?? '';
+
     const quantity = toNum(
       window.prompt('Cantidad:', String((base as any)?.items?.[0]?.quantity ?? 1)),
       1
     );
+
     const unitCost = toNum(
       window.prompt('Precio unitario (€):', String((base as any)?.items?.[0]?.unitCost ?? 0)),
       0
@@ -219,7 +249,6 @@ const TemplateList: React.FC = () => {
     if (!uid) return;
     if (!confirm('¿Eliminar esta plantilla?')) return;
 
-    // UI optimista
     setTemplates((prev) => prev.filter((t) => t.id !== id));
 
     try {
@@ -235,10 +264,8 @@ const TemplateList: React.FC = () => {
   const handleUseNow = async (tpl: Template) => {
     if (!uid) return;
 
-    // “Usar ahora” aquí solo marca lastUsedAt (la selección en factura la haremos en InvoiceEditor)
     const next: any = { ...tpl, lastUsedAt: new Date().toISOString() };
 
-    // UI optimista
     setTemplates((prev) => prev.map((t) => (t.id === tpl.id ? (next as Template) : t)));
 
     try {
@@ -338,6 +365,7 @@ const TemplateList: React.FC = () => {
         <button
           onClick={handleCreate}
           className="bg-indigo-600 text-white px-6 py-2 rounded-xl font-bold hover:bg-indigo-700 transition-all"
+          disabled={!uid}
         >
           + Nueva Plantilla
         </button>
@@ -355,6 +383,7 @@ const TemplateList: React.FC = () => {
         <button
           onClick={handleCreate}
           className="border-2 border-dashed border-slate-200 rounded-3xl p-6 flex flex-col items-center justify-center text-slate-400 hover:border-indigo-300 hover:text-indigo-400 transition-all bg-white/50"
+          disabled={!uid}
         >
           <Plus size={48} strokeWidth={1} className="mb-2" />
           <span className="font-bold">Crear nueva plantilla</span>

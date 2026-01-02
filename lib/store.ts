@@ -16,11 +16,13 @@ import {
   type QueryDocumentSnapshot,
   type DocumentData
 } from 'firebase/firestore';
+
+// ✅ Estructura FACTURACION-/lib/*
 import { db } from './firebase';
 
 const STORAGE_KEYS = {
   INVOICES: 'si_invoices', // legacy local cache / migration
-  CLIENTS: 'si_clients',
+  CLIENTS: 'si_clients',   // legacy local cache / migration
   SETTINGS: 'si_settings',
   TEMPLATES: 'si_templates'
 };
@@ -79,6 +81,19 @@ function migrateSettings(raw: any): AppSettings {
   return DEFAULT_SETTINGS;
 }
 
+/**
+ * Helpers cache list
+ */
+function unshiftUnique(list: string[], id: string) {
+  if (!list.includes(id)) return [id, ...list];
+  return [id, ...list.filter(x => x !== id)];
+}
+
+/**
+ * -----------------------------
+ *  Invoices cache en memoria
+ * -----------------------------
+ */
 type InvoicesCacheKey = string; // `${uid}::${issuerId||'*'}`
 
 const _invoiceCache = {
@@ -105,22 +120,45 @@ function fromFirestoreInvoice(id: string, data: any): Invoice {
   return { id, ...rest } as Invoice;
 }
 
-/**
- * Inserta un id al principio de una lista (sin duplicados)
- */
-function unshiftUnique(list: string[], id: string) {
-  if (!list.includes(id)) return [id, ...list];
-  // si ya existe, lo movemos arriba
-  return [id, ...list.filter(x => x !== id)];
-}
-
-/**
- * Si una lista está cargada, la actualiza (sin forzar lecturas)
- */
-function touchLoadedList(key: InvoicesCacheKey, id: string) {
+function touchLoadedInvoiceList(key: InvoicesCacheKey, id: string) {
   if (!_invoiceCache.loadedByKey.has(key)) return;
   const current = _invoiceCache.listIdsByKey.get(key) || [];
   _invoiceCache.listIdsByKey.set(key, unshiftUnique(current, id));
+}
+
+/**
+ * -----------------------------
+ *  Clients cache en memoria
+ * -----------------------------
+ * - 1 query por pantalla: loadClientsOnce(uid)
+ */
+type ClientDoc = Party & { id: string };
+type ClientsCacheKey = string; // uid
+
+const _clientCache = {
+  byId: new Map<string, ClientDoc>(),
+  listIdsByUid: new Map<ClientsCacheKey, string[]>(),
+  loadedByUid: new Set<ClientsCacheKey>()
+};
+
+function toFirestoreClient(uid: string, client: ClientDoc) {
+  return {
+    ...client,
+    ownerUid: uid,
+    updatedAt: serverTimestamp(),
+    createdAt: (client as any).createdAt || serverTimestamp()
+  };
+}
+
+function fromFirestoreClient(id: string, data: any): ClientDoc {
+  const { ownerUid, updatedAt, createdAt, ...rest } = data || {};
+  return { id, ...rest } as ClientDoc;
+}
+
+function touchLoadedClientList(uid: string, id: string) {
+  if (!_clientCache.loadedByUid.has(uid)) return;
+  const current = _clientCache.listIdsByUid.get(uid) || [];
+  _clientCache.listIdsByUid.set(uid, unshiftUnique(current, id));
 }
 
 export const store = {
@@ -219,22 +257,17 @@ export const store = {
     const inv = fromFirestoreInvoice(snap.id, snap.data());
     _invoiceCache.byId.set(inv.id, inv);
 
-    // Si la lista general ya estaba cargada, lo metemos sin lecturas extra
-    touchLoadedList(invoicesKey(uid), inv.id);
-
+    touchLoadedInvoiceList(invoicesKey(uid), inv.id);
     return inv;
   },
 
-  // ✅ CAMBIO MÍNIMO AQUÍ
   saveInvoice: async (uid: string, invoice: Invoice, opts?: { issuerId?: string }) => {
     const issuerId = opts?.issuerId || (invoice as any).issuerId || undefined;
 
-    // cache local instantánea
     _invoiceCache.byId.set(invoice.id, invoice);
 
-    // Si ya hay listas cargadas, actualizar UI sin recargar
-    touchLoadedList(invoicesKey(uid), invoice.id);
-    if (issuerId) touchLoadedList(invoicesKey(uid, issuerId), invoice.id);
+    touchLoadedInvoiceList(invoicesKey(uid), invoice.id);
+    if (issuerId) touchLoadedInvoiceList(invoicesKey(uid, issuerId), invoice.id);
 
     const ref = doc(db, 'invoices', invoice.id);
     await setDoc(ref, toFirestoreInvoice(uid, invoice, issuerId), { merge: true });
@@ -270,10 +303,81 @@ export const store = {
     localStorage.removeItem(STORAGE_KEYS.INVOICES);
   },
 
-  // -------- Clients (LOCAL por ahora) --------
+  // -------- Clients (Firestore) --------
+
+  loadClientsOnce: async (uid: string, opts?: { pageSize?: number; force?: boolean }): Promise<ClientDoc[]> => {
+    const pageSize = opts?.pageSize ?? 200;
+
+    if (!opts?.force && _clientCache.loadedByUid.has(uid)) {
+      const ids = _clientCache.listIdsByUid.get(uid) || [];
+      return ids.map(id => _clientCache.byId.get(id)!).filter(Boolean);
+    }
+
+    const col = collection(db, 'clients');
+    const q = query(
+      col,
+      where('ownerUid', '==', uid),
+      orderBy('updatedAt', 'desc'),
+      limit(pageSize)
+    );
+
+    const snap = await getDocs(q);
+
+    const ids: string[] = [];
+    snap.forEach(d => {
+      const c = fromFirestoreClient(d.id, d.data());
+      _clientCache.byId.set(c.id, c);
+      ids.push(c.id);
+    });
+
+    _clientCache.listIdsByUid.set(uid, ids);
+    _clientCache.loadedByUid.add(uid);
+
+    return ids.map(id => _clientCache.byId.get(id)!).filter(Boolean);
+  },
+
+  saveClient: async (uid: string, client: ClientDoc) => {
+    _clientCache.byId.set(client.id, client);
+    touchLoadedClientList(uid, client.id);
+
+    const ref = doc(db, 'clients', client.id);
+    await setDoc(ref, toFirestoreClient(uid, client), { merge: true });
+  },
+
+  deleteClient: async (uid: string, id: string) => {
+    _clientCache.byId.delete(id);
+    const ids = _clientCache.listIdsByUid.get(uid) || [];
+    if (ids.includes(id)) _clientCache.listIdsByUid.set(uid, ids.filter(x => x !== id));
+
+    const ref = doc(db, 'clients', id);
+    await deleteDoc(ref);
+  },
+
+  migrateLocalClientsToFirestoreOnce: async (uid: string) => {
+    const raw = localStorage.getItem(STORAGE_KEYS.CLIENTS);
+    if (!raw) return;
+
+    let clients: ClientDoc[] = [];
+    try {
+      clients = JSON.parse(raw) || [];
+    } catch {
+      return;
+    }
+    if (!Array.isArray(clients) || clients.length === 0) return;
+
+    for (const c of clients) {
+      if (!c?.id) continue;
+      await store.saveClient(uid, c);
+    }
+
+    localStorage.removeItem(STORAGE_KEYS.CLIENTS);
+  },
+
+  // -------- Clients (LEGACY LOCAL, por compatibilidad) --------
   getClients: (): Party[] => JSON.parse(localStorage.getItem(STORAGE_KEYS.CLIENTS) || '[]'),
 
-  saveClient: (client: Party & { id: string }) => {
+  // renombrado mentalmente: local only
+  saveClientLocal: (client: Party & { id: string }) => {
     const clients = store.getClients() as any[];
     const index = clients.findIndex(c => c.id === client.id);
     if (index >= 0) clients[index] = client;
@@ -300,7 +404,8 @@ export const store = {
     }
   },
 
-  saveSettings: (settings: AppSettings) => localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings)),
+  saveSettings: (settings: AppSettings) =>
+    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings)),
 
   // -------- Issuers (CRUD) --------
   getIssuers: (): Issuer[] => store.getSettings().issuers,

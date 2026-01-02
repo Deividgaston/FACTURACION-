@@ -10,51 +10,109 @@ interface InvoiceListProps {
   onNew: () => void;
 }
 
+const monthNames = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+
+const getInvDate = (inv: any): Date | null => {
+  const v = inv?.date || inv?.createdAt;
+  if (!v) return null;
+  try {
+    if (typeof v?.toDate === 'function') return v.toDate();
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return null;
+    return d;
+  } catch {
+    return null;
+  }
+};
+
 const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
   const [filter, setFilter] = useState<InvoiceStatus | 'ALL'>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // 1 query por pantalla (sin listeners)
+  // ✅ NUEVO: filtros mes/año
+  const [yearFilter, setYearFilter] = useState<string>('ALL');
+  const [monthFilter, setMonthFilter] = useState<string>('ALL'); // 1..12
+
+  const reload = async (force = false) => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) {
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const list = await store.loadInvoicesOnce(uid, { force });
+      setInvoices(list);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 1 query por pantalla
   useEffect(() => {
     let alive = true;
 
     const run = async () => {
-      const uid = auth.currentUser?.uid;
-      if (!uid) {
-        setLoading(false);
-        return;
-      }
-
-      setLoading(true);
-      try {
-        const list = await store.loadInvoicesOnce(uid);
-        if (alive) setInvoices(list);
-      } finally {
-        if (alive) setLoading(false);
-      }
+      if (!alive) return;
+      await reload(false);
     };
 
     run();
+
+    // ✅ refrescar al volver desde editor (sin tocar parent)
+    const onFocus = async () => {
+      if (localStorage.getItem('si_invoices_dirty') === '1') {
+        localStorage.removeItem('si_invoices_dirty');
+        await reload(true);
+      }
+    };
+
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+
     return () => {
       alive = false;
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const yearOptions = useMemo(() => {
+    const ys = new Set<number>();
+    invoices.forEach((inv: any) => {
+      const d = getInvDate(inv);
+      if (d) ys.add(d.getFullYear());
+    });
+    return Array.from(ys).sort((a, b) => b - a);
+  }, [invoices]);
 
   const filteredInvoices = useMemo(() => {
     const s = searchTerm.trim().toLowerCase();
 
-    return invoices.filter(inv => {
+    return invoices.filter((inv: any) => {
       const matchesFilter = filter === 'ALL' || inv.status === filter;
+
       const matchesSearch =
         !s ||
-        inv.recipient.name.toLowerCase().includes(s) ||
-        inv.number.toLowerCase().includes(s);
+        String(inv?.recipient?.name || '').toLowerCase().includes(s) ||
+        String(inv?.number || '').toLowerCase().includes(s);
 
-      return matchesFilter && matchesSearch;
+      const d = getInvDate(inv);
+      const matchesYear = yearFilter === 'ALL' ? true : d ? String(d.getFullYear()) === yearFilter : false;
+      const matchesMonth =
+        monthFilter === 'ALL'
+          ? true
+          : d
+            ? String(d.getMonth() + 1) === monthFilter
+            : false;
+
+      return matchesFilter && matchesSearch && matchesYear && matchesMonth;
     });
-  }, [invoices, filter, searchTerm]);
+  }, [invoices, filter, searchTerm, yearFilter, monthFilter]);
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -63,17 +121,16 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
     const uid = auth.currentUser?.uid;
     if (!uid) return;
 
-    // UI optimista
     const prev = invoices;
-    setInvoices(prev => prev.filter(i => i.id !== id));
+    setInvoices((p) => p.filter((i) => i.id !== id));
 
     try {
       await store.deleteInvoice(uid, id);
+      // marca “dirty” por coherencia si hay otras pantallas abiertas
+      localStorage.setItem('si_invoices_dirty', '1');
     } catch {
-      // rollback + recarga “source of truth”
       setInvoices(prev);
-      const list = await store.loadInvoicesOnce(uid, { force: true });
-      setInvoices(list);
+      await reload(true);
     }
   };
 
@@ -89,32 +146,69 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
         </button>
       </div>
 
-      <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col md:flex-row gap-4 items-center">
-        <div className="relative flex-1 w-full">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-          <input
-            type="text"
-            placeholder="Buscar por cliente o número..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 bg-slate-50 border-none rounded-xl outline-none focus:ring-2 focus:ring-indigo-100"
-          />
+      <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4">
+        <div className="flex flex-col md:flex-row gap-4 items-center">
+          <div className="relative flex-1 w-full">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+            <input
+              type="text"
+              placeholder="Buscar por cliente o número..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 bg-slate-50 border-none rounded-xl outline-none focus:ring-2 focus:ring-indigo-100"
+            />
+          </div>
+
+          <div className="flex items-center gap-2 overflow-x-auto w-full md:w-auto pb-2 md:pb-0">
+            {(['ALL', 'DRAFT', 'ISSUED', 'PAID', 'CANCELLED'] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => setFilter(s as any)}
+                className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all border whitespace-nowrap ${
+                  filter === s
+                    ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'bg-white text-slate-500 border-slate-100 hover:border-slate-300'
+                }`}
+              >
+                {s === 'ALL' ? 'Todas' : s}
+              </button>
+            ))}
+          </div>
         </div>
 
-        <div className="flex items-center gap-2 overflow-x-auto w-full md:w-auto pb-2 md:pb-0">
-          {(['ALL', 'DRAFT', 'ISSUED', 'PAID', 'CANCELLED'] as const).map(s => (
-            <button
-              key={s}
-              onClick={() => setFilter(s as any)}
-              className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all border whitespace-nowrap ${
-                filter === s
-                  ? 'bg-indigo-600 text-white border-indigo-600'
-                  : 'bg-white text-slate-500 border-slate-100 hover:border-slate-300'
-              }`}
+        {/* ✅ NUEVO: filtros mes/año */}
+        <div className="flex flex-col md:flex-row gap-3">
+          <div className="flex-1">
+            <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Año</label>
+            <select
+              className="w-full mt-1 px-4 py-2 rounded-xl border border-slate-200 outline-none bg-white"
+              value={yearFilter}
+              onChange={(e) => setYearFilter(e.target.value)}
             >
-              {s === 'ALL' ? 'Todas' : s}
-            </button>
-          ))}
+              <option value="ALL">Todos</option>
+              {yearOptions.map((y) => (
+                <option key={y} value={String(y)}>
+                  {y}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex-1">
+            <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Mes</label>
+            <select
+              className="w-full mt-1 px-4 py-2 rounded-xl border border-slate-200 outline-none bg-white"
+              value={monthFilter}
+              onChange={(e) => setMonthFilter(e.target.value)}
+            >
+              <option value="ALL">Todos</option>
+              {monthNames.map((m, idx) => (
+                <option key={m} value={String(idx + 1)}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
 
@@ -138,8 +232,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
                 </td>
               </tr>
             ) : filteredInvoices.length > 0 ? (
-              filteredInvoices.map((inv) => {
-                // ✅ FIX: evita indexar STATUS_COLORS con any/string
+              filteredInvoices.map((inv: any) => {
                 const statusKey = ((inv as any)?.status || 'DRAFT') as keyof typeof STATUS_COLORS;
                 const statusClass = STATUS_COLORS[statusKey] || STATUS_COLORS.DRAFT;
 
@@ -150,8 +243,10 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
                     className="group hover:bg-slate-50 transition-colors cursor-pointer"
                   >
                     <td className="py-5 px-6 font-mono text-sm font-bold text-slate-400">{inv.number}</td>
-                    <td className="py-5 px-6 font-bold text-slate-800">{inv.recipient.name}</td>
-                    <td className="py-5 px-6 text-right font-black text-slate-900">{inv.total.toFixed(2)} €</td>
+                    <td className="py-5 px-6 font-bold text-slate-800">{inv.recipient?.name || '—'}</td>
+                    <td className="py-5 px-6 text-right font-black text-slate-900">
+                      {(Number(inv.total) || 0).toFixed(2)} €
+                    </td>
                     <td className="py-5 px-6">
                       <div className="flex justify-center">
                         <span className={`px-3 py-1 rounded-full text-[10px] font-black border ${statusClass}`}>

@@ -39,12 +39,13 @@ const safeItemsFromTemplate = (tpl: any): InvoiceItem[] =>
       description: String(it?.description ?? '').trim(),
       quantity: Number.isFinite(q) ? q : 1,
       unitCost: Number.isFinite(u) ? u : 0,
-      amount: Number.isFinite(it?.amount) ? Number(it.amount) : (Number.isFinite(q) ? q : 1) * (Number.isFinite(u) ? u : 0)
+      amount: Number.isFinite(it?.amount)
+        ? Number(it.amount)
+        : (Number.isFinite(q) ? q : 1) * (Number.isFinite(u) ? u : 0)
     };
   });
 
-const toDateInputValue = (iso?: string) =>
-  new Date(iso || Date.now()).toISOString().slice(0, 10);
+const toDateInputValue = (iso?: string) => new Date(iso || Date.now()).toISOString().slice(0, 10);
 
 const dateInputToISO = (d: string) => new Date(`${d}T12:00:00.000Z`).toISOString();
 
@@ -199,27 +200,30 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     const vatAmount = (subtotal * vatRate) / 100;
     const irpfAmount = (subtotal * irpfRate) / 100;
 
-    await store.saveInvoice(uid, {
-      id: Date.now().toString(),
-      number,
-      issuer,
-      issuerId: selectedIssuerId,
-      recipient,
-      clientId: selectedClientId,
-      templateId: selectedTemplateId || null,
-      date: iso,
-      dueDate: addDaysISO(iso, 30),
-      status,
-      lang,
-      items,
-      subtotal,
-      vatRate,
-      vatAmount,
-      irpfRate,
-      irpfAmount,
-      total: subtotal + vatAmount - irpfAmount,
-      isRecurring: false
-    } as Invoice);
+    await store.saveInvoice(
+      uid,
+      {
+        id: Date.now().toString(),
+        number,
+        issuer,
+        issuerId: selectedIssuerId,
+        recipient,
+        clientId: selectedClientId,
+        templateId: selectedTemplateId || null,
+        date: iso,
+        dueDate: addDaysISO(iso, 30),
+        status,
+        lang,
+        items,
+        subtotal,
+        vatRate,
+        vatAmount,
+        irpfRate,
+        irpfAmount,
+        total: subtotal + vatAmount - irpfAmount,
+        isRecurring: false
+      } as Invoice
+    );
 
     localStorage.setItem('si_invoices_dirty', '1');
     onBack();
@@ -228,6 +232,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   /* ================= UI handlers (mínimos) ================= */
 
   const t = TRANSLATIONS[lang];
+  const tAny = t as any; // ✅ FIX build: permite back/save aunque no estén en el type
   const lockedByTemplate = !!selectedTemplateId && !invoiceId;
 
   const onSelectClient = (id: string) => {
@@ -289,13 +294,17 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       <div className="flex items-center justify-between gap-3">
         <button className="flex items-center gap-2 text-sm" onClick={onBack}>
           <ChevronLeft size={18} />
-          {t.back ?? 'Volver'}
+          {tAny.back || 'Volver'}
         </button>
 
         <div className="flex items-center gap-2">
-          <button className="flex items-center gap-2 px-3 py-2 border rounded" onClick={handleSave} disabled={!selectedClientId}>
+          <button
+            className="flex items-center gap-2 px-3 py-2 border rounded"
+            onClick={handleSave}
+            disabled={!selectedClientId}
+          >
             <Save size={18} />
-            {t.save ?? 'Guardar'}
+            {tAny.save || 'Guardar'}
           </button>
         </div>
       </div>
@@ -320,7 +329,11 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
         <div className="space-y-2">
           <div className="text-sm opacity-70">Plantilla</div>
-          <select className="w-full border rounded px-3 py-2" value={selectedTemplateId} onChange={(e) => onSelectTemplate(e.target.value)}>
+          <select
+            className="w-full border rounded px-3 py-2"
+            value={selectedTemplateId}
+            onChange={(e) => onSelectTemplate(e.target.value)}
+          >
             <option value="">—</option>
             {templates.map((x) => (
               <option key={x.id} value={x.id}>
@@ -369,7 +382,11 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       <div className="border rounded">
         <div className="flex items-center justify-between p-3 border-b">
           <div className="font-medium">Líneas</div>
-          <button className="flex items-center gap-2 px-3 py-2 border rounded" onClick={addItem} disabled={lockedByTemplate}>
+          <button
+            className="flex items-center gap-2 px-3 py-2 border rounded"
+            onClick={addItem}
+            disabled={lockedByTemplate}
+          >
             <Plus size={18} />
             Añadir línea
           </button>
@@ -433,7 +450,12 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         </div>
         <div className="space-y-2">
           <div className="text-sm opacity-70">Estado</div>
-          <select className="w-full border rounded px-3 py-2" value={status} onChange={(e) => setStatus(e.target.value as any)} disabled={lockedByTemplate}>
+          <select
+            className="w-full border rounded px-3 py-2"
+            value={status}
+            onChange={(e) => setStatus(e.target.value as any)}
+            disabled={lockedByTemplate}
+          >
             <option value="DRAFT">DRAFT</option>
             <option value="SENT">SENT</option>
             <option value="PAID">PAID</option>

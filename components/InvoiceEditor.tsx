@@ -81,7 +81,9 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     return { list, active };
   };
 
-  const loadAllOnce = async (uid: string): Promise<{ s: AppSettings; issuersList: Issuer[]; active: string }> => {
+  const loadAllOnce = async (
+    uid: string
+  ): Promise<{ s: AppSettings; issuersList: Issuer[]; active: string }> => {
     // 1) settings (1 lectura)
     const sSnap = await getDoc(settingsRef(uid));
 
@@ -142,12 +144,11 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
           // snapshot histórico
           setIssuer(inv.issuer);
 
-          // issuerId guardado en factura (Fase 3)
+          // issuerId guardado en factura (FASE 3)
           const invIssuerId = (inv as any).issuerId as string | undefined;
           if (invIssuerId) {
             setSelectedIssuerId(invIssuerId);
           } else {
-            // best-effort: mapear por taxId + name
             const match = issuersList.find(i => i.taxId === inv.issuer.taxId && i.name === inv.issuer.name);
             if (match) setSelectedIssuerId(match.id);
           }
@@ -160,9 +161,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         const current = (s.yearCounter?.[year] || 0) + 1;
 
         setInvoiceNumber(`${year}${current.toString().padStart(4, '0')}`);
-        setItems([
-          { id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }
-        ]);
+        setItems([{ id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }]);
 
         const activeId = s.activeIssuerId || active || issuersList[0]?.id || '';
         const activeIssuer = issuersList.find(x => x.id === activeId) || issuersList[0];
@@ -221,11 +220,12 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
     const id = invoiceId && invoiceId !== 'new' ? invoiceId : Date.now().toString();
 
-    // Guardamos issuerId aunque el type Invoice no lo tenga aún (Fase 3)
-    const newInvoice: Invoice & { issuerId?: string | null } = {
+    // Guardamos issuerId aunque el type Invoice no lo tenga aún (FASE 3)
+    const newInvoice: any = {
       id,
       number: invoiceNumber,
       issuer, // snapshot
+      issuerId: selectedIssuerId || null,
       recipient,
       clientId: selectedClientId,
       date: new Date().toISOString(),
@@ -241,7 +241,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       total,
       isRecurring: false
     };
-    newInvoice.issuerId = selectedIssuerId || null;
 
     await store.saveInvoice(uid, newInvoice as Invoice, { issuerId: selectedIssuerId });
 

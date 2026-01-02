@@ -11,6 +11,7 @@ interface DashboardProps {
 
 const Dashboard: React.FC<DashboardProps> = ({ onNewInvoice, onEditInvoice }) => {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [loading, setLoading] = useState(true);
 
   // 1 query por pantalla (y si ya está cacheado, 0 lecturas)
   useEffect(() => {
@@ -18,10 +19,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onNewInvoice, onEditInvoice }) =>
 
     const run = async () => {
       const uid = auth.currentUser?.uid;
-      if (!uid) return;
+      if (!uid) {
+        if (alive) setLoading(false);
+        return;
+      }
 
-      const list = await store.loadInvoicesOnce(uid);
-      if (alive) setInvoices(list);
+      setLoading(true);
+      try {
+        // Si en el futuro quieres filtrar por emisor:
+        // const issuerId = store.getActiveIssuerId();
+        // const list = await store.loadInvoicesOnce(uid, { issuerId });
+        const list = await store.loadInvoicesOnce(uid);
+        if (alive) setInvoices(list);
+      } finally {
+        if (alive) setLoading(false);
+      }
     };
 
     run();
@@ -47,14 +59,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onNewInvoice, onEditInvoice }) =>
     ];
   }, [invoices]);
 
-  const recentInvoices = invoices.slice(-5).reverse();
+  // Firestore ya viene orderBy(updatedAt,'desc') => los más recientes están al principio
+  const recentInvoices = useMemo(() => invoices.slice(0, 5), [invoices]);
 
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold text-slate-800">Dashboard</h1>
-          <p className="text-slate-500">Bienvenido a SwiftInvoice. Tienes {invoices.length} facturas registradas.</p>
+          <p className="text-slate-500">
+            Bienvenido a SwiftInvoice. {loading ? 'Cargando…' : `Tienes ${invoices.length} facturas registradas.`}
+          </p>
         </div>
         <button
           onClick={onNewInvoice}
@@ -83,6 +98,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onNewInvoice, onEditInvoice }) =>
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-xl font-bold text-slate-800">Actividad Reciente</h2>
           </div>
+
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead>
@@ -93,23 +109,30 @@ const Dashboard: React.FC<DashboardProps> = ({ onNewInvoice, onEditInvoice }) =>
                   <th className="pb-4 px-2 text-center">Estado</th>
                 </tr>
               </thead>
+
               <tbody className="divide-y divide-slate-50">
-                {recentInvoices.length > 0 ? recentInvoices.map((inv) => (
-                  <tr key={inv.id} onClick={() => onEditInvoice(inv.id)} className="group hover:bg-slate-50 transition-colors cursor-pointer">
-                    <td className="py-4 px-2 font-medium text-slate-700">{inv.recipient.name}</td>
-                    <td className="py-4 px-2 text-slate-500 font-mono text-sm">{inv.number}</td>
-                    <td className="py-4 px-2 text-right font-bold text-slate-800">{inv.total.toFixed(2)}€</td>
-                    <td className="py-4 px-2">
-                      <div className="flex justify-center">
-                        <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold border ${
-                          inv.status === 'PAID' ? 'bg-green-50 text-green-700 border-green-100' : 'bg-blue-50 text-blue-700 border-blue-100'
-                        }`}>
-                          {inv.status}
-                        </span>
-                      </div>
-                    </td>
+                {loading ? (
+                  <tr>
+                    <td colSpan={4} className="py-10 text-center text-slate-400">Cargando…</td>
                   </tr>
-                )) : (
+                ) : recentInvoices.length > 0 ? (
+                  recentInvoices.map((inv) => (
+                    <tr key={inv.id} onClick={() => onEditInvoice(inv.id)} className="group hover:bg-slate-50 transition-colors cursor-pointer">
+                      <td className="py-4 px-2 font-medium text-slate-700">{inv.recipient.name}</td>
+                      <td className="py-4 px-2 text-slate-500 font-mono text-sm">{inv.number}</td>
+                      <td className="py-4 px-2 text-right font-bold text-slate-800">{inv.total.toFixed(2)}€</td>
+                      <td className="py-4 px-2">
+                        <div className="flex justify-center">
+                          <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold border ${
+                            inv.status === 'PAID' ? 'bg-green-50 text-green-700 border-green-100' : 'bg-blue-50 text-blue-700 border-blue-100'
+                          }`}>
+                            {inv.status}
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
                   <tr>
                     <td colSpan={4} className="py-10 text-center text-slate-400">No hay facturas recientes</td>
                   </tr>

@@ -31,52 +31,49 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // ✅ NUEVO: filtros mes/año
+  // ✅ filtros mes/año
   const [yearFilter, setYearFilter] = useState<string>('ALL');
   const [monthFilter, setMonthFilter] = useState<string>('ALL'); // 1..12
 
-  const reload = async (force = false) => {
+  const reload = async (force = false, alive?: { current: boolean }) => {
     const uid = auth.currentUser?.uid;
     if (!uid) {
-      setLoading(false);
+      if (!alive || alive.current) setLoading(false);
       return;
     }
 
-    setLoading(true);
+    if (!alive || alive.current) setLoading(true);
     try {
       const list = await store.loadInvoicesOnce(uid, { force });
-      setInvoices(list);
+      if (!alive || alive.current) setInvoices(list);
     } finally {
-      setLoading(false);
+      if (!alive || alive.current) setLoading(false);
     }
   };
 
-  // 1 query por pantalla
+  // 1 query por pantalla + refresh al volver del editor
   useEffect(() => {
-    let alive = true;
+    const alive = { current: true };
 
-    const run = async () => {
-      if (!alive) return;
-      await reload(false);
-    };
+    reload(false, alive);
 
-    run();
+    const onMaybeRefresh = async () => {
+      // visibilitychange dispara también al ocultar; solo recargamos al volver a visible
+      if (document.visibilityState && document.visibilityState !== 'visible') return;
 
-    // ✅ refrescar al volver desde editor (sin tocar parent)
-    const onFocus = async () => {
       if (localStorage.getItem('si_invoices_dirty') === '1') {
         localStorage.removeItem('si_invoices_dirty');
-        await reload(true);
+        await reload(true, alive);
       }
     };
 
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onFocus);
+    window.addEventListener('focus', onMaybeRefresh);
+    document.addEventListener('visibilitychange', onMaybeRefresh);
 
     return () => {
-      alive = false;
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onFocus);
+      alive.current = false;
+      window.removeEventListener('focus', onMaybeRefresh);
+      document.removeEventListener('visibilitychange', onMaybeRefresh);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -104,11 +101,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
       const d = getInvDate(inv);
       const matchesYear = yearFilter === 'ALL' ? true : d ? String(d.getFullYear()) === yearFilter : false;
       const matchesMonth =
-        monthFilter === 'ALL'
-          ? true
-          : d
-            ? String(d.getMonth() + 1) === monthFilter
-            : false;
+        monthFilter === 'ALL' ? true : d ? String(d.getMonth() + 1) === monthFilter : false;
 
       return matchesFilter && matchesSearch && matchesYear && matchesMonth;
     });
@@ -126,7 +119,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
 
     try {
       await store.deleteInvoice(uid, id);
-      // marca “dirty” por coherencia si hay otras pantallas abiertas
+      // coherencia si hay otras pantallas abiertas
       localStorage.setItem('si_invoices_dirty', '1');
     } catch {
       setInvoices(prev);
@@ -176,7 +169,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
           </div>
         </div>
 
-        {/* ✅ NUEVO: filtros mes/año */}
+        {/* filtros mes/año */}
         <div className="flex flex-col md:flex-row gap-3">
           <div className="flex-1">
             <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Año</label>

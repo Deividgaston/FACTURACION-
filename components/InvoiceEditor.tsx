@@ -12,10 +12,7 @@ interface InvoiceEditorProps {
   invoiceId?: string;
 }
 
-// Cliente = Party + id (para selector y listado)
 type Client = Party & { id: string };
-
-// Template con id
 type Template = InvoiceTemplate & { id: string };
 
 const isFilled = (v: any) => {
@@ -65,17 +62,14 @@ const addDaysISO = (iso: string, days: number) => {
 const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const [loading, setLoading] = useState(true);
 
-  // Firestore settings (source of truth)
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [issuers, setIssuers] = useState<Issuer[]>([]);
   const [activeIssuerId, setActiveIssuerId] = useState<string>('');
 
-  // Clients Firestore
   const [clients, setClients] = useState<Client[]>([]);
 
-  // Templates Firestore
   const [templates, setTemplates] = useState<Template[]>([]);
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string>(''); // solo para NEW
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>(''); // solo NEW
 
   const [step, setStep] = useState(1);
   const [lang, setLang] = useState<Language>('ES');
@@ -86,13 +80,10 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const [selectedClientId, setSelectedClientId] = useState('');
   const [invoiceNumber, setInvoiceNumber] = useState('');
 
-  // fecha editable (YYYY-MM-DD)
   const [invoiceDate, setInvoiceDate] = useState<string>(toDateInputValue());
 
-  // Multi-issuer selection
   const [selectedIssuerId, setSelectedIssuerId] = useState<string>('');
 
-  // Snapshot used for invoice save & print
   const [issuer, setIssuer] = useState<Party>({
     name: '—',
     taxId: '—',
@@ -206,27 +197,34 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       setItems([{ id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }]);
     }
 
-    // receptor / cliente
+    // ✅ FIX: receptor / cliente coherente
     if (tAny.recipient) {
       setRecipient(tAny.recipient as Party);
     }
-    if (typeof tAny.clientId === 'string') {
+
+    // primero clientId directo
+    if (typeof tAny.clientId === 'string' && tAny.clientId) {
       setSelectedClientId(tAny.clientId);
+    } else if (tAny.recipient) {
+      // fallback: match por taxId+name en clients ya cargados
+      const matchClient = clients.find(
+        (c) => c.taxId === tAny.recipient.taxId && c.name === tAny.recipient.name
+      );
+      if (matchClient) setSelectedClientId(matchClient.id);
     }
 
-    // emisor
-    if (tAny.issuer) {
-      setIssuer(tAny.issuer as Party);
-    }
+    // emisor snapshot
+    if (tAny.issuer) setIssuer(tAny.issuer as Party);
+
+    // issuerId directo
     if (typeof tAny.issuerId === 'string' && tAny.issuerId) {
       setSelectedIssuerId(tAny.issuerId);
     } else {
-      // fallback: intenta casar por taxId+name con issuers ya cargados
+      // fallback: casar por taxId+name
       const match = issuers.find((i) => i.taxId === tAny?.issuer?.taxId && i.name === tAny?.issuer?.name);
       if (match) setSelectedIssuerId(match.id);
     }
 
-    // estado siempre DRAFT al aplicar plantilla
     setStatus('DRAFT');
   };
 
@@ -296,7 +294,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
         setSelectedTemplateId('');
 
-        // número provisional (definitivo en save con transaction)
         const year = new Date().getFullYear();
         const current = (s.yearCounter?.[year] || 0) + 1;
         setInvoiceNumber(`${year}${current.toString().padStart(4, '0')}`);
@@ -342,7 +339,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     setSelectedTemplateId(tplId);
 
     if (!tplId) {
-      // “Sin plantilla”: resetea contenido, pero NO toca la fecha
       setItems([{ id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }]);
       setVatRate(21);
       setIrpfRate(15);
@@ -365,11 +361,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       const yc = data.yearCounter || {};
       const next = (Number(yc[year]) || 0) + 1;
 
-      tx.set(
-        ref,
-        { yearCounter: { ...yc, [year]: next }, updatedAt: serverTimestamp() },
-        { merge: true }
-      );
+      tx.set(ref, { yearCounter: { ...yc, [year]: next }, updatedAt: serverTimestamp() }, { merge: true });
 
       return `${year}${String(next).padStart(4, '0')}`;
     });
@@ -443,10 +435,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   };
 
   const addItem = () => {
-    setItems([
-      ...items,
-      { id: Date.now().toString(), description: '', quantity: 1, unitCost: 0, amount: 0 }
-    ]);
+    setItems([...items, { id: Date.now().toString(), description: '', quantity: 1, unitCost: 0, amount: 0 }]);
   };
 
   const updateItem = (id: string, field: keyof InvoiceItem, value: string | number) => {
@@ -469,6 +458,9 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const t = TRANSLATIONS[lang];
   const isNewUI = !invoiceId || invoiceId === 'new';
 
+  // ✅ regla “solo cambia fecha” cuando hay plantilla seleccionada
+  const lockedByTemplate = isNewUI && !!selectedTemplateId;
+
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <style>{`
@@ -481,10 +473,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       `}</style>
 
       <div className="flex items-center justify-between no-print">
-        <button
-          onClick={onBack}
-          className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition-colors"
-        >
+        <button onClick={onBack} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition-colors">
           <ChevronLeft size={20} /> Volver
         </button>
         <div className="flex gap-3">
@@ -511,11 +500,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
           <div key={s} className="flex items-center gap-3">
             <div
               className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${
-                step === s
-                  ? 'bg-indigo-600 text-white'
-                  : step > s
-                    ? 'bg-indigo-100 text-indigo-600'
-                    : 'bg-slate-100 text-slate-400'
+                step === s ? 'bg-indigo-600 text-white' : step > s ? 'bg-indigo-100 text-indigo-600' : 'bg-slate-100 text-slate-400'
               }`}
             >
               {step > s ? <CheckCircle size={16} /> : s}
@@ -556,7 +541,8 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                         setSelectedClientId('');
                       }
                     }}
-                    disabled={loading}
+                    disabled={loading || lockedByTemplate}
+                    title={lockedByTemplate ? 'Bloqueado por plantilla (solo cambia la fecha).' : ''}
                   >
                     <option value="">Seleccionar de la lista...</option>
                     {clients.map((c) => (
@@ -594,7 +580,8 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                     className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
                     value={selectedIssuerId}
                     onChange={(e) => handleIssuerChange(e.target.value)}
-                    disabled={loading || issuers.length === 0}
+                    disabled={loading || issuers.length === 0 || lockedByTemplate}
+                    title={lockedByTemplate ? 'Bloqueado por plantilla (solo cambia la fecha).' : ''}
                   >
                     {issuers.map((i) => (
                       <option key={i.id} value={i.id}>
@@ -654,6 +641,8 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                 <button
                   onClick={addItem}
                   className="flex items-center gap-2 bg-slate-100 text-slate-700 px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-slate-200"
+                  disabled={lockedByTemplate}
+                  title={lockedByTemplate ? 'Bloqueado por plantilla (solo cambia la fecha).' : ''}
                 >
                   <Plus size={16} /> Añadir Línea
                 </button>
@@ -668,6 +657,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                         onChange={(e) => updateItem(item.id, 'description', e.target.value)}
                         placeholder="Descripción del servicio..."
                         className="w-full bg-white px-3 py-2 rounded-lg border border-slate-200 outline-none text-sm"
+                        disabled={lockedByTemplate}
                       />
                     </div>
                     <div className="col-span-4 md:col-span-2">
@@ -676,6 +666,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                         value={item.quantity}
                         onChange={(e) => updateItem(item.id, 'quantity', e.target.value)}
                         className="w-full bg-white px-3 py-2 rounded-lg border border-slate-200 text-sm"
+                        disabled={lockedByTemplate}
                       />
                     </div>
                     <div className="col-span-4 md:col-span-2">
@@ -684,6 +675,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                         value={item.unitCost}
                         onChange={(e) => updateItem(item.id, 'unitCost', e.target.value)}
                         className="w-full bg-white px-3 py-2 rounded-lg border border-slate-200 text-sm"
+                        disabled={lockedByTemplate}
                       />
                     </div>
                     <div className="col-span-4 md:col-span-2 font-bold text-right text-slate-800">
@@ -706,6 +698,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                     value={vatRate}
                     onChange={(e) => setVatRate(Number(e.target.value))}
                     className="w-20 px-3 py-2 rounded-lg border border-slate-200 text-right outline-none font-bold"
+                    disabled={lockedByTemplate}
                   />
                 </div>
                 <div className="flex items-center justify-between">
@@ -715,6 +708,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                     value={irpfRate}
                     onChange={(e) => setIrpfRate(Number(e.target.value))}
                     className="w-20 px-3 py-2 rounded-lg border border-slate-200 text-right outline-none font-bold"
+                    disabled={lockedByTemplate}
                   />
                 </div>
                 <hr className="border-slate-200" />
@@ -741,9 +735,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   onClick={() => setStatus('PAID')}
                   disabled={!canIssue}
                   className={`flex-1 py-3 rounded-xl border font-bold transition-all ${
-                    status === 'PAID'
-                      ? 'bg-green-50 border-green-200 text-green-700'
-                      : 'bg-white text-slate-400'
+                    status === 'PAID' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-white text-slate-400'
                   } ${!canIssue ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   PAGADA
@@ -752,18 +744,14 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   onClick={() => setStatus('ISSUED')}
                   disabled={!canIssue}
                   className={`flex-1 py-3 rounded-xl border font-bold transition-all ${
-                    status === 'ISSUED'
-                      ? 'bg-blue-50 border-blue-200 text-blue-700'
-                      : 'bg-white text-slate-400'
+                    status === 'ISSUED' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white text-slate-400'
                   } ${!canIssue ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   EMITIDA
                 </button>
               </div>
 
-              <p className="text-center text-slate-400 text-sm">
-                Previsualización debajo. Dale a Imprimir para generar el PDF.
-              </p>
+              <p className="text-center text-slate-400 text-sm">Previsualización debajo. Dale a Imprimir para generar el PDF.</p>
             </div>
           )}
         </div>
@@ -772,9 +760,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
           <button
             disabled={step === 1}
             onClick={() => setStep(step - 1)}
-            className={`px-6 py-2.5 rounded-xl font-bold transition-all ${
-              step === 1 ? 'opacity-0' : 'text-slate-500 hover:bg-slate-200'
-            }`}
+            className={`px-6 py-2.5 rounded-xl font-bold transition-all ${step === 1 ? 'opacity-0' : 'text-slate-500 hover:bg-slate-200'}`}
           >
             Anterior
           </button>

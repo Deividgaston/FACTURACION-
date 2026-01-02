@@ -3,7 +3,7 @@ import { Save, Shield, Briefcase, LogOut, Plus, Trash2, Check, Mail } from 'luci
 import { store } from '../lib/store';
 import { Issuer, AppSettings } from '../types';
 import { auth, db } from '../lib/firebase';
-import { sendPasswordResetEmail } from 'firebase/auth';
+import { sendPasswordResetEmail, onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 
 interface SettingsViewProps {
@@ -40,18 +40,19 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
     setActiveId(s.activeIssuerId || (s.issuers?.[0]?.id || ''));
   };
 
-  const loadSettingsOnce = async () => {
+  // ✅ uid explícito para no depender de auth.currentUser (que tarda en hidratar)
+  const loadSettingsOnce = async (uid?: string | null) => {
     setLoading(true);
     setFsError('');
 
-    const uid = auth.currentUser?.uid;
+    // Si no hay uid, mostramos local (rápido) pero NO damos por finalizado el flujo:
+    // en cuanto haya uid, re-cargaremos desde Firestore.
     if (!uid) {
       applySettingsToState(store.getSettings());
       setLoading(false);
       return;
     }
 
-    // 1 lectura (source of truth Firestore) + fallback local
     try {
       const snap = await getDoc(settingsRef(uid));
 
@@ -64,29 +65,23 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
           nextInvoiceNumber: data.nextInvoiceNumber || 1,
           yearCounter: data.yearCounter || { [new Date().getFullYear()]: 1 }
         };
-        // cache local
+
         store.saveSettings(remote);
         applySettingsToState(remote);
         setFsError('');
         return;
       }
 
-      // Si no existe doc en FS, usar local y crear doc (1 write)
+      // No existe doc en FS -> subimos local a FS (1 write)
       const local = store.getSettings();
       applySettingsToState(local);
 
-      // Intentamos crear en Firestore, pero si falla NO mostramos banner (seguimos con local)
-      try {
-        await setDoc(settingsRef(uid), { ...local, updatedAt: serverTimestamp() }, { merge: true });
-      } catch (e) {
-        console.error('Settings Firestore write (create) failed:', e);
-      }
-
+      await setDoc(settingsRef(uid), { ...local, updatedAt: serverTimestamp() }, { merge: true });
       setFsError('');
     } catch (e) {
-      // fallback local sin romper (y sin banner, porque los datos cargan igual)
-      console.error('Settings Firestore read failed:', e);
+      console.error('Settings Firestore load failed:', e);
       applySettingsToState(store.getSettings());
+      // No mostramos banner si estamos bien con local
       setFsError('');
     } finally {
       setLoading(false);
@@ -94,7 +89,6 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
   };
 
   const saveSettingsEverywhere = async (next: AppSettings) => {
-    // local cache siempre
     store.saveSettings(next);
     applySettingsToState(next);
 
@@ -111,11 +105,19 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
   };
 
   useEffect(() => {
-    loadSettingsOnce();
+    // 1) pinta algo rápido desde local
+    loadSettingsOnce(null);
+
+    // 2) cuando Auth esté listo, carga Firestore y crea doc si falta
+    const unsub = onAuthStateChanged(auth, (user) => {
+      loadSettingsOnce(user?.uid || null);
+    });
+
+    return () => unsub();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---- Issuers CRUD (con Firestore)
+  // ---- Issuers CRUD
   const addIssuer = async () => {
     if (!newIssuer.name?.trim() || !newIssuer.taxId?.trim()) {
       alert('Nombre y NIF son obligatorios');
@@ -127,8 +129,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
     }
 
     const created = store.addIssuer(newIssuer);
-    const next = store.getSettings(); // ya incluye el nuevo emisor
-    // forzar active si no había
+    const next = store.getSettings();
     if (!next.activeIssuerId) next.activeIssuerId = created.id;
 
     await saveSettingsEverywhere(next);
@@ -166,7 +167,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
     await saveSettingsEverywhere(next);
   };
 
-  // ---- Firebase password reset (real)
+  // ---- Firebase password reset
   const handlePasswordReset = async () => {
     setResetSent(false);
     setResetError('');
@@ -194,7 +195,6 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
         <p className="text-slate-500">Gestiona emisores, seguridad y sesión.</p>
       </header>
 
-      {/* ✅ Solo mostrar error si no estamos cargando */}
       {fsError && !loading && (
         <div className="bg-red-50 border border-red-200 text-red-700 rounded-2xl px-6 py-4 font-semibold">
           {fsError}

@@ -1,5 +1,8 @@
 export type InvoiceStatus = 'DRAFT' | 'ISSUED' | 'PAID' | 'CANCELLED';
-export type InvoiceType = 'RENT' | 'CLASS' | 'SERVICE' | 'OTHER';
+
+// ✅ Añadido 'GENERIC' porque ya lo estás usando en plantillas
+export type InvoiceType = 'RENT' | 'CLASS' | 'SERVICE' | 'OTHER' | 'GENERIC';
+
 export type Language = 'ES' | 'EN';
 
 export interface Address {
@@ -34,31 +37,67 @@ export interface InvoiceItem {
   amount: number;
 }
 
+/**
+ * ✅ Plantilla “usable” para no repetir:
+ * - incluye emisor + receptor + líneas + impuestos
+ * - la fecha NO se guarda (se pone al crear la factura)
+ *
+ * Compatibilidad:
+ * - `defaultItems` legacy opcional (antiguo)
+ * - `recurring` legacy opcional (tu UI usa tpl.recurring)
+ * - `createdAt/updatedAt/lastUsedAt` opcionales (Firestore)
+ */
 export interface InvoiceTemplate {
   id: string;
   name: string;
   type: InvoiceType;
   lang: Language;
-  defaultItems: Omit<InvoiceItem, 'id'>[];
+
+  // ✅ NUEVO: snapshot emisor/receptor (lo que tú quieres repetir)
+  issuer?: Party;
+  issuerId?: string | null;
+
+  recipient?: Party;
+  clientId?: string; // si quieres enlazar con un cliente concreto
+
+  // ✅ NUEVO: líneas completas (con id) para aplicarlas tal cual en InvoiceEditor
+  items?: InvoiceItem[];
+
+  // Legacy (por si venías usando otro shape)
+  defaultItems?: Omit<InvoiceItem, 'id'>[];
+
   vatRate: number;
   irpfRate: number; // For withholding (negative)
+
+  // ✅ Normalizado
   isRecurring: boolean;
+
+  // ✅ Compat UI actual
+  recurring?: boolean;
+
   notes?: string;
+
+  // Firestore/meta (opcionales)
+  lastUsedAt?: any;
+  createdAt?: any;
+  updatedAt?: any;
 }
 
 export interface Invoice {
   id: string;
   number: string;
 
-  issuer: Party;      // snapshot stored per invoice (keeps history stable)
-  issuerId?: string | null; // ✅ FASE 3: emisor seleccionado (para filtros/listados)
+  issuer: Party;                 // snapshot stored per invoice (keeps history stable)
+  issuerId?: string | null;      // emisor seleccionado
 
-  recipient: Party;   // snapshot (normalmente proviene de Client)
+  recipient: Party;              // snapshot (normalmente proviene de Client)
   clientId: string;
 
-  templateId?: string;
+  templateId?: string | null;
+
   date: string;
   dueDate: string;
+
   status: InvoiceStatus;
   lang: Language;
 

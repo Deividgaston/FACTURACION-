@@ -15,12 +15,15 @@ const emptyIssuer = (): Omit<Issuer, 'id'> => ({
   name: '',
   taxId: '',
   email: '',
-  address: { street: '', city: '', zip: '', country: '' }
+  address: { street: '', city: '', zip: '', country: 'España' }
 });
 
-const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
-  const [loading, setLoading] = useState(true);
+const settingsRef = (uid: string) => doc(db, 'settings', uid);
 
+const isAddressComplete = (a: any) =>
+  !!a?.street?.trim() && !!a?.city?.trim() && !!a?.zip?.trim() && !!a?.country?.trim();
+
+const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
   const [issuers, setIssuers] = useState<Issuer[]>([]);
   const [activeId, setActiveId] = useState<string>('');
   const [editing, setEditing] = useState<Issuer | null>(null);
@@ -28,190 +31,121 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
 
   const [resetSent, setResetSent] = useState(false);
   const [resetError, setResetError] = useState<string>('');
-  const [settingsError, setSettingsError] = useState<string>('');
 
-  // --- helpers firestore
-  const settingsRef = (uid: string) => doc(db, 'settings', uid);
+  const [fsError, setFsError] = useState<string>('');
 
-  const applySettingsToUI = (s: AppSettings) => {
+  const applySettingsToState = (s: AppSettings) => {
     setIssuers(s.issuers || []);
-    setActiveId(s.activeIssuerId || (s.issuers?.[0]?.id ?? ''));
+    setActiveId(s.activeIssuerId || (s.issuers?.[0]?.id || ''));
   };
 
-  const buildSettingsPayload = (s: AppSettings) => ({
-    issuers: s.issuers || [],
-    activeIssuerId: s.activeIssuerId || (s.issuers?.[0]?.id ?? ''),
-    defaultCurrency: s.defaultCurrency,
-    nextInvoiceNumber: s.nextInvoiceNumber,
-    yearCounter: s.yearCounter,
-    updatedAt: serverTimestamp()
-  });
-
-  // ---- Load once (1 getDoc)
-  useEffect(() => {
-    let alive = true;
-
-    const run = async () => {
-      setLoading(true);
-      setSettingsError('');
-
-      const uid = auth.currentUser?.uid;
-      if (!uid) {
-        if (alive) setLoading(false);
-        return;
-      }
-
-      try {
-        const ref = settingsRef(uid);
-        const snap = await getDoc(ref);
-
-        // Si existe en Firestore: usamos eso
-        if (snap.exists()) {
-          const data = snap.data() as any;
-          const remote: AppSettings = {
-            issuers: Array.isArray(data.issuers) ? data.issuers : [],
-            activeIssuerId: typeof data.activeIssuerId === 'string' ? data.activeIssuerId : '',
-            defaultCurrency: data.defaultCurrency || 'EUR',
-            nextInvoiceNumber: data.nextInvoiceNumber || 1,
-            yearCounter: data.yearCounter || { [new Date().getFullYear()]: 1 }
-          };
-
-          if (alive) applySettingsToUI(remote);
-          return;
-        }
-
-        // Si NO existe: migramos desde local (tu store ya migra issuerDefaults -> issuers)
-        const local = store.getSettings();
-
-        // aseguramos mínimo 1 issuer
-        const safeLocal: AppSettings = {
-          ...local,
-          issuers: local.issuers && local.issuers.length ? local.issuers : local.issuers,
-          activeIssuerId:
-            local.activeIssuerId ||
-            (local.issuers && local.issuers.length ? local.issuers[0].id : '')
-        };
-
-        await setDoc(ref, { ...buildSettingsPayload(safeLocal), createdAt: serverTimestamp() }, { merge: true });
-
-        // limpiamos legacy para que no haya doble fuente de verdad
-        try {
-          localStorage.removeItem('si_settings');
-        } catch {}
-
-        if (alive) applySettingsToUI(safeLocal);
-      } catch (e) {
-        if (alive) setSettingsError('No se pudieron cargar los ajustes (Firestore).');
-      } finally {
-        if (alive) setLoading(false);
-      }
-    };
-
-    run();
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const persistSettings = async (uid: string, s: AppSettings) => {
-    await setDoc(settingsRef(uid), buildSettingsPayload(s), { merge: true });
-  };
-
-  const currentSettingsFromUI = (): AppSettings => {
-    // mantenemos el resto de campos desde el local (por compatibilidad)
-    const base = store.getSettings();
-    return {
-      ...base,
-      issuers,
-      activeIssuerId: activeId || (issuers[0]?.id ?? '')
-    };
-  };
-
-  // ---- Issuers (Firestore)
-  const saveIssuer = async () => {
-    if (!editing) return;
-
+  const loadSettingsOnce = async () => {
+    setFsError('');
     const uid = auth.currentUser?.uid;
-    if (!uid) return;
-
-    const updatedIssuers = issuers.map(i => (i.id === editing.id ? editing : i));
-
-    // UI optimista
-    setIssuers(updatedIssuers);
-    setEditing(null);
-
-    try {
-      const s = { ...currentSettingsFromUI(), issuers: updatedIssuers };
-      await persistSettings(uid, s);
-    } catch {
-      setSettingsError('No se pudo guardar el emisor.');
-    }
-  };
-
-  const addIssuer = async () => {
-    if (!newIssuer.name || !newIssuer.taxId) {
-      alert('Nombre y NIF son obligatorios');
+    if (!uid) {
+      applySettingsToState(store.getSettings());
       return;
     }
 
+    // 1 lectura (source of truth Firestore) + fallback local
+    try {
+      const snap = await getDoc(settingsRef(uid));
+      if (snap.exists()) {
+        const data = snap.data() as any;
+        const remote: AppSettings = {
+          issuers: Array.isArray(data.issuers) ? data.issuers : [],
+          activeIssuerId: typeof data.activeIssuerId === 'string' ? data.activeIssuerId : '',
+          defaultCurrency: data.defaultCurrency || 'EUR',
+          nextInvoiceNumber: data.nextInvoiceNumber || 1,
+          yearCounter: data.yearCounter || { [new Date().getFullYear()]: 1 }
+        };
+        // cache local
+        store.saveSettings(remote);
+        applySettingsToState(remote);
+        return;
+      }
+
+      // Si no existe doc en FS, usar local y crear doc (1 write)
+      const local = store.getSettings();
+      applySettingsToState(local);
+      await setDoc(settingsRef(uid), { ...local, updatedAt: serverTimestamp() }, { merge: true });
+    } catch (e) {
+      // fallback local sin romper
+      setFsError('No se pudieron cargar los ajustes (Firestore).');
+      applySettingsToState(store.getSettings());
+    }
+  };
+
+  const saveSettingsEverywhere = async (next: AppSettings) => {
+    // local cache siempre
+    store.saveSettings(next);
+    applySettingsToState(next);
+
     const uid = auth.currentUser?.uid;
     if (!uid) return;
 
-    const id = `iss_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    const issuerToAdd: Issuer = { id, ...newIssuer };
-
-    const updatedIssuers = [issuerToAdd, ...issuers];
-    const nextActiveId = activeId || issuerToAdd.id;
-
-    // UI optimista
-    setIssuers(updatedIssuers);
-    setActiveId(nextActiveId);
-    setNewIssuer(emptyIssuer());
-
     try {
-      const s = { ...currentSettingsFromUI(), issuers: updatedIssuers, activeIssuerId: nextActiveId };
-      await persistSettings(uid, s);
+      await setDoc(settingsRef(uid), { ...next, updatedAt: serverTimestamp() }, { merge: true });
+      setFsError('');
     } catch {
-      setSettingsError('No se pudo añadir el emisor.');
+      setFsError('No se pudieron guardar los ajustes en Firestore (se guardaron en local).');
     }
+  };
+
+  useEffect(() => {
+    loadSettingsOnce();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ---- Issuers CRUD (con Firestore)
+  const addIssuer = async () => {
+    if (!newIssuer.name?.trim() || !newIssuer.taxId?.trim()) {
+      alert('Nombre y NIF son obligatorios');
+      return;
+    }
+    if (!isAddressComplete(newIssuer.address)) {
+      alert('La dirección del emisor debe estar completa (calle, ciudad, CP, país).');
+      return;
+    }
+
+    const created = store.addIssuer(newIssuer);
+    const next = store.getSettings(); // ya incluye el nuevo emisor
+    // forzar active si no había
+    if (!next.activeIssuerId) next.activeIssuerId = created.id;
+
+    await saveSettingsEverywhere(next);
+    setNewIssuer(emptyIssuer());
+  };
+
+  const saveIssuer = async () => {
+    if (!editing) return;
+
+    if (!editing.name?.trim() || !editing.taxId?.trim()) {
+      alert('Nombre y NIF son obligatorios');
+      return;
+    }
+    if (!isAddressComplete(editing.address)) {
+      alert('La dirección del emisor debe estar completa (calle, ciudad, CP, país).');
+      return;
+    }
+
+    store.updateIssuer(editing);
+    const next = store.getSettings();
+    await saveSettingsEverywhere(next);
+    setEditing(null);
   };
 
   const deleteIssuer = async (id: string) => {
     if (!confirm('¿Eliminar este emisor?')) return;
-
-    const uid = auth.currentUser?.uid;
-    if (!uid) return;
-
-    const updatedIssuers = issuers.filter(i => i.id !== id);
-    const safeIssuers = updatedIssuers.length ? updatedIssuers : issuers; // evitamos quedarnos sin ninguno
-    const nextActive =
-      activeId === id ? (safeIssuers[0]?.id || '') : activeId;
-
-    // UI optimista
-    setIssuers(safeIssuers);
-    setActiveId(nextActive);
-
-    try {
-      const s = { ...currentSettingsFromUI(), issuers: safeIssuers, activeIssuerId: nextActive };
-      await persistSettings(uid, s);
-    } catch {
-      setSettingsError('No se pudo eliminar el emisor.');
-    }
+    store.deleteIssuer(id);
+    const next = store.getSettings();
+    await saveSettingsEverywhere(next);
   };
 
   const setActive = async (id: string) => {
-    const uid = auth.currentUser?.uid;
-    if (!uid) return;
-
-    // UI optimista
-    setActiveId(id);
-
-    try {
-      const s = { ...currentSettingsFromUI(), activeIssuerId: id };
-      await persistSettings(uid, s);
-    } catch {
-      setSettingsError('No se pudo activar el emisor.');
-    }
+    store.setActiveIssuer(id);
+    const next = store.getSettings();
+    await saveSettingsEverywhere(next);
   };
 
   // ---- Firebase password reset (real)
@@ -241,9 +175,9 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
         <p className="text-slate-500">Gestiona emisores, seguridad y sesión.</p>
       </header>
 
-      {settingsError && (
-        <div className="bg-red-50 border border-red-100 text-red-700 rounded-2xl p-4 font-semibold text-sm">
-          {settingsError}
+      {fsError && (
+        <div className="bg-red-50 border border-red-200 text-red-700 rounded-2xl px-6 py-4 font-semibold">
+          {fsError}
         </div>
       )}
 
@@ -255,52 +189,52 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
         </div>
 
         <div className="p-6 space-y-6">
-          {loading ? (
-            <div className="py-10 text-center text-slate-400">Cargando emisores…</div>
-          ) : (
-            issuers.map((iss) => (
-              <div
-                key={iss.id}
-                className="border rounded-2xl p-4 flex flex-col md:flex-row gap-4 md:items-center justify-between"
-              >
-                <div>
-                  <p className="font-bold">{iss.alias || iss.name}</p>
-                  <p className="text-sm text-slate-500">{iss.taxId}</p>
-                  {activeId === iss.id && (
-                    <span className="text-xs text-green-600 font-bold">Emisor activo</span>
-                  )}
-                </div>
-
-                <div className="flex gap-2">
-                  {activeId !== iss.id && (
-                    <button
-                      onClick={() => setActive(iss.id)}
-                      className="px-3 py-2 text-sm bg-green-600 text-white rounded-xl flex gap-1 items-center"
-                    >
-                      <Check size={14} /> Activar
-                    </button>
-                  )}
-                  <button
-                    onClick={() => setEditing({ ...iss })}
-                    className="px-3 py-2 text-sm bg-slate-200 rounded-xl"
-                  >
-                    Editar
-                  </button>
-                  <button
-                    onClick={() => deleteIssuer(iss.id)}
-                    className="px-3 py-2 text-sm bg-red-100 text-red-700 rounded-xl"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
+          {issuers.map((iss) => (
+            <div
+              key={iss.id}
+              className="border rounded-2xl p-4 flex flex-col md:flex-row gap-4 md:items-center justify-between"
+            >
+              <div>
+                <p className="font-bold">{iss.alias || iss.name}</p>
+                <p className="text-sm text-slate-500">{iss.taxId}</p>
+                <p className="text-sm text-slate-500">
+                  {iss.address?.street} · {iss.address?.city} · {iss.address?.zip} · {iss.address?.country}
+                </p>
+                {activeId === iss.id && (
+                  <span className="text-xs text-green-600 font-bold">Emisor activo</span>
+                )}
               </div>
-            ))
-          )}
+
+              <div className="flex gap-2">
+                {activeId !== iss.id && (
+                  <button
+                    onClick={() => setActive(iss.id)}
+                    className="px-3 py-2 text-sm bg-green-600 text-white rounded-xl flex gap-1 items-center"
+                  >
+                    <Check size={14} /> Activar
+                  </button>
+                )}
+                <button
+                  onClick={() => setEditing({ ...iss })}
+                  className="px-3 py-2 text-sm bg-slate-200 rounded-xl"
+                >
+                  Editar
+                </button>
+                <button
+                  onClick={() => deleteIssuer(iss.id)}
+                  className="px-3 py-2 text-sm bg-red-100 text-red-700 rounded-xl"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            </div>
+          ))}
 
           {/* NEW ISSUER */}
-          {!loading && (
-            <div className="border-t pt-6 space-y-4">
-              <h3 className="font-bold">Nuevo emisor</h3>
+          <div className="border-t pt-6 space-y-4">
+            <h3 className="font-bold">Nuevo emisor</h3>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <input
                 placeholder="Alias (opcional)"
                 className="input"
@@ -308,32 +242,65 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
                 onChange={(e) => setNewIssuer({ ...newIssuer, alias: e.target.value })}
               />
               <input
-                placeholder="Nombre / Razón social"
-                className="input"
-                value={newIssuer.name}
-                onChange={(e) => setNewIssuer({ ...newIssuer, name: e.target.value })}
-              />
-              <input
-                placeholder="NIF / CIF"
-                className="input"
-                value={newIssuer.taxId}
-                onChange={(e) => setNewIssuer({ ...newIssuer, taxId: e.target.value })}
-              />
-              <input
                 placeholder="Email"
                 className="input"
                 value={newIssuer.email}
                 onChange={(e) => setNewIssuer({ ...newIssuer, email: e.target.value })}
               />
+              <input
+                placeholder="Nombre / Razón social *"
+                className="input md:col-span-2"
+                value={newIssuer.name}
+                onChange={(e) => setNewIssuer({ ...newIssuer, name: e.target.value })}
+              />
+              <input
+                placeholder="NIF / CIF *"
+                className="input"
+                value={newIssuer.taxId}
+                onChange={(e) => setNewIssuer({ ...newIssuer, taxId: e.target.value })}
+              />
 
-              <button
-                onClick={addIssuer}
-                className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2"
-              >
-                <Plus size={16} /> Añadir emisor
-              </button>
+              <input
+                placeholder="Calle *"
+                className="input md:col-span-2"
+                value={newIssuer.address.street}
+                onChange={(e) =>
+                  setNewIssuer({ ...newIssuer, address: { ...newIssuer.address, street: e.target.value } })
+                }
+              />
+              <input
+                placeholder="Ciudad *"
+                className="input"
+                value={newIssuer.address.city}
+                onChange={(e) =>
+                  setNewIssuer({ ...newIssuer, address: { ...newIssuer.address, city: e.target.value } })
+                }
+              />
+              <input
+                placeholder="CP *"
+                className="input"
+                value={newIssuer.address.zip}
+                onChange={(e) =>
+                  setNewIssuer({ ...newIssuer, address: { ...newIssuer.address, zip: e.target.value } })
+                }
+              />
+              <input
+                placeholder="País *"
+                className="input md:col-span-2"
+                value={newIssuer.address.country}
+                onChange={(e) =>
+                  setNewIssuer({ ...newIssuer, address: { ...newIssuer.address, country: e.target.value } })
+                }
+              />
             </div>
-          )}
+
+            <button
+              onClick={addIssuer}
+              className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2"
+            >
+              <Plus size={16} /> Añadir emisor
+            </button>
+          </div>
         </div>
       </section>
 
@@ -344,25 +311,58 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
             <h3 className="font-bold text-lg">Editar emisor</h3>
 
             <input
+              placeholder="Alias (opcional)"
               className="input"
               value={editing.alias || ''}
               onChange={(e) => setEditing({ ...editing, alias: e.target.value })}
             />
             <input
+              placeholder="Nombre / Razón social *"
               className="input"
               value={editing.name}
               onChange={(e) => setEditing({ ...editing, name: e.target.value })}
             />
             <input
+              placeholder="NIF / CIF *"
               className="input"
               value={editing.taxId}
               onChange={(e) => setEditing({ ...editing, taxId: e.target.value })}
             />
             <input
+              placeholder="Email"
               className="input"
               value={editing.email}
               onChange={(e) => setEditing({ ...editing, email: e.target.value })}
             />
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <input
+                placeholder="Calle *"
+                className="input md:col-span-2"
+                value={editing.address.street}
+                onChange={(e) => setEditing({ ...editing, address: { ...editing.address, street: e.target.value } })}
+              />
+              <input
+                placeholder="Ciudad *"
+                className="input"
+                value={editing.address.city}
+                onChange={(e) => setEditing({ ...editing, address: { ...editing.address, city: e.target.value } })}
+              />
+              <input
+                placeholder="CP *"
+                className="input"
+                value={editing.address.zip}
+                onChange={(e) => setEditing({ ...editing, address: { ...editing.address, zip: e.target.value } })}
+              />
+              <input
+                placeholder="País *"
+                className="input md:col-span-2"
+                value={editing.address.country}
+                onChange={(e) =>
+                  setEditing({ ...editing, address: { ...editing.address, country: e.target.value } })
+                }
+              />
+            </div>
 
             <div className="flex justify-end gap-2">
               <button onClick={() => setEditing(null)} className="px-4 py-2 rounded-xl bg-slate-200">
@@ -386,8 +386,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
         </h2>
 
         <div className="text-sm text-slate-500">
-          Sesión actual:{' '}
-          <span className="font-semibold text-slate-700">{auth.currentUser?.email || '-'}</span>
+          Sesión actual: <span className="font-semibold text-slate-700">{auth.currentUser?.email || '-'}</span>
         </div>
 
         <button

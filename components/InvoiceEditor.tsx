@@ -18,6 +18,10 @@ type Template = InvoiceTemplate & { id: string };
 // 🔑 misma key que App.tsx
 const LS_NEW_INVOICE_TEMPLATE_ID = 'si_new_invoice_template_id';
 
+// 🔑 handoff print desde InvoiceList
+const LS_PRINT_INVOICE_ID = 'si_print_invoice_id';
+const LS_PRINT_LANG = 'si_print_lang';
+
 /* ================= helpers ================= */
 
 const safeItemsFromTemplate = (tpl: any): InvoiceItem[] =>
@@ -90,6 +94,9 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
   const isExisting = !!invoiceId;
 
+  // evita doble print (StrictMode en dev puede ejecutar efectos 2 veces)
+  const [autoPrintDone, setAutoPrintDone] = useState(false);
+
   /* ================= plantilla ================= */
 
   const applyTemplateToInvoice = (tpl: Template) => {
@@ -101,7 +108,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     setItems(safeItemsFromTemplate(tpl));
 
     // NO bloqueamos ni forzamos el estado aquí: el usuario puede cambiarlo
-    // setStatus('DRAFT');
 
     if ((tpl as any).recipient) setRecipient((tpl as any).recipient);
     if ((tpl as any).clientId) setSelectedClientId((tpl as any).clientId);
@@ -203,6 +209,39 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     };
   }, [invoiceId]);
 
+  /* ================= auto-print handoff ================= */
+
+  useEffect(() => {
+    if (!invoiceId) return;
+    if (loading) return;
+    if (autoPrintDone) return;
+
+    const targetId = localStorage.getItem(LS_PRINT_INVOICE_ID);
+    if (!targetId) return;
+    if (String(targetId) !== String(invoiceId)) return;
+
+    const pl = (localStorage.getItem(LS_PRINT_LANG) || 'ES') as Language;
+
+    // marcar para evitar doble print
+    setAutoPrintDone(true);
+
+    // limpiar keys ya
+    localStorage.removeItem(LS_PRINT_INVOICE_ID);
+    localStorage.removeItem(LS_PRINT_LANG);
+
+    // imprimir con idioma pedido
+    const prev = lang;
+    setLang(pl);
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        window.print();
+        setLang(prev);
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [invoiceId, loading]);
+
   /* ================= save ================= */
 
   const reserveInvoiceNumber = async (uid: string, iso: string) => {
@@ -271,7 +310,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     onBack();
   };
 
-  /* ================= print ================= */
+  /* ================= print (manual) ================= */
 
   const handlePrint = () => {
     const prev = lang;
@@ -448,7 +487,11 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       <div className="border rounded">
         <div className="flex items-center justify-between p-3 border-b">
           <div className="font-medium">Líneas</div>
-          <button className="flex items-center gap-2 px-3 py-2 border rounded" onClick={addItem} disabled={!canEditFields}>
+          <button
+            className="flex items-center gap-2 px-3 py-2 border rounded"
+            onClick={addItem}
+            disabled={!canEditFields}
+          >
             <Plus size={18} />
             Añadir línea
           </button>
@@ -515,11 +558,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         <div className="space-y-2">
           <div className="text-sm opacity-70">Estado</div>
           {/* ✅ Siempre editable (plantilla y edición existente) */}
-          <select
-            className="w-full border rounded px-3 py-2"
-            value={status}
-            onChange={(e) => setStatus(e.target.value as any)}
-          >
+          <select className="w-full border rounded px-3 py-2" value={status} onChange={(e) => setStatus(e.target.value as any)}>
             <option value="DRAFT">DRAFT</option>
             <option value="ISSUED">ISSUED</option>
             <option value="PAID">PAID</option>

@@ -16,6 +16,11 @@ export interface Party {
   email: string;
 }
 
+/** ✅ Recomendado: tipo explícito para clientes */
+export interface Client extends Party {
+  id: string;
+}
+
 export interface Issuer extends Party {
   id: string;        // unique id for selecting/editing
   alias?: string;    // optional display name (e.g. "Empresa Madrid")
@@ -44,8 +49,8 @@ export interface InvoiceTemplate {
 export interface Invoice {
   id: string;
   number: string;
-  issuer: Party;     // option A: snapshot stored per invoice (keeps history stable)
-  recipient: Party;
+  issuer: Party;     // snapshot stored per invoice (keeps history stable)
+  recipient: Party;  // normalmente será un Client, pero se guarda como Party (snapshot)
   clientId: string;
   templateId?: string;
   date: string;

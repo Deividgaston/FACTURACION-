@@ -37,9 +37,9 @@ const safeItemsFromTemplate = (tpl: any): InvoiceItem[] =>
     return {
       id: String(it?.id || `tpl_${idx}_${Date.now()}`),
       description: String(it?.description ?? '').trim(),
-      quantity: q,
-      unitCost: u,
-      amount: Number.isFinite(it?.amount) ? Number(it.amount) : q * u
+      quantity: Number.isFinite(q) ? q : 1,
+      unitCost: Number.isFinite(u) ? u : 0,
+      amount: Number.isFinite(it?.amount) ? Number(it.amount) : (Number.isFinite(q) ? q : 1) * (Number.isFinite(u) ? u : 0)
     };
   });
 
@@ -113,42 +113,57 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     let alive = true;
 
     const run = async (uid: string) => {
-      setLoading(true);
+      try {
+        setLoading(true);
 
-      const settingsSnap = await getDoc(doc(db, 'settings', uid));
-      const settings = settingsSnap.exists() ? settingsSnap.data() : store.getSettings();
+        const settingsSnap = await getDoc(doc(db, 'settings', uid));
+        const settings = (settingsSnap.exists() ? settingsSnap.data() : store.getSettings()) as AppSettings;
 
-      setIssuers(settings.issuers || []);
+        setIssuers(settings.issuers || []);
 
-      const cl = await store.loadClientsOnce(uid);
-      setClients(cl as Client[]);
+        const cl = await store.loadClientsOnce(uid);
+        if (!alive) return;
+        setClients(cl as Client[]);
 
-      await store.migrateLocalTemplatesToFirestoreOnce(uid);
-      const tpl = await store.loadTemplatesOnce(uid);
-      setTemplates(tpl as Template[]);
+        await store.migrateLocalTemplatesToFirestoreOnce(uid);
+        const tpl = await store.loadTemplatesOnce(uid);
+        if (!alive) return;
+        setTemplates(tpl as Template[]);
 
-      // NUEVA FACTURA
-      if (!invoiceId) {
-        const storedTplId = localStorage.getItem(LS_NEW_INVOICE_TEMPLATE_ID);
-        if (storedTplId) {
-          const found = tpl.find((t: any) => t.id === storedTplId);
-          if (found) {
-            setSelectedTemplateId(found.id);
-            applyTemplateToInvoice(found);
+        // NUEVA FACTURA
+        if (!invoiceId) {
+          const storedTplId = localStorage.getItem(LS_NEW_INVOICE_TEMPLATE_ID);
+          if (storedTplId) {
+            const found = (tpl as any[]).find((t: any) => t.id === storedTplId);
+            if (found) {
+              setSelectedTemplateId(found.id);
+              applyTemplateToInvoice(found as Template);
+            }
+            localStorage.removeItem(LS_NEW_INVOICE_TEMPLATE_ID);
           }
-          localStorage.removeItem(LS_NEW_INVOICE_TEMPLATE_ID);
+
+          const year = new Date().getFullYear();
+          const next = (settings.yearCounter?.[year] || 0) + 1;
+          setInvoiceNumber(`${year}${String(next).padStart(4, '0')}`);
         }
-
-        const year = new Date().getFullYear();
-        const next = (settings.yearCounter?.[year] || 0) + 1;
-        setInvoiceNumber(`${year}${String(next).padStart(4, '0')}`);
+      } catch (e) {
+        // Evita blanco silencioso
+        console.error('InvoiceEditor load error:', e);
+      } finally {
+        if (alive) setLoading(false);
       }
-
-      setLoading(false);
     };
 
     const unsub = onAuthStateChanged(auth, (u) => {
-      if (u?.uid && alive) run(u.uid);
+      if (!alive) return;
+
+      if (u?.uid) {
+        run(u.uid);
+      } else {
+        // ✅ FIX CLAVE: si no hay sesión, no te quedas en blanco
+        setLoading(false);
+        // opcional si tu app requiere auth: onBack();
+      }
     });
 
     return () => {
@@ -180,7 +195,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     const iso = dateInputToISO(invoiceDate);
     const number = await reserveInvoiceNumber(uid, iso);
 
-    const subtotal = items.reduce((a, i) => a + i.amount, 0);
+    const subtotal = items.reduce((a, i) => a + (Number(i.amount) || 0), 0);
     const vatAmount = (subtotal * vatRate) / 100;
     const irpfAmount = (subtotal * irpfRate) / 100;
 
@@ -210,16 +225,224 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     onBack();
   };
 
-  /* ================= render ================= */
+  /* ================= UI handlers (mínimos) ================= */
 
   const t = TRANSLATIONS[lang];
   const lockedByTemplate = !!selectedTemplateId && !invoiceId;
 
+  const onSelectClient = (id: string) => {
+    setSelectedClientId(id);
+    const found = clients.find((c) => c.id === id);
+    if (found) setRecipient(found);
+  };
+
+  const onSelectIssuer = (id: string) => {
+    setSelectedIssuerId(id);
+    const found = issuers.find((i) => (i as any).id === id);
+    if (found) setIssuer((found as any) as Party);
+  };
+
+  const onSelectTemplate = (id: string) => {
+    setSelectedTemplateId(id);
+    const found = templates.find((x) => x.id === id);
+    if (found) applyTemplateToInvoice(found);
+  };
+
+  const addItem = () => {
+    setItems((prev) => [
+      ...prev,
+      {
+        id: `it_${Date.now()}`,
+        description: '',
+        quantity: 1,
+        unitCost: 0,
+        amount: 0
+      }
+    ]);
+  };
+
+  const updateItem = (id: string, patch: Partial<InvoiceItem>) => {
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.id !== id) return it;
+        const next = { ...it, ...patch } as InvoiceItem;
+        const q = Number(next.quantity) || 0;
+        const u = Number(next.unitCost) || 0;
+        next.amount = q * u;
+        return next;
+      })
+    );
+  };
+
+  /* ================= render ================= */
+
+  if (loading) {
+    return <div className="p-6">Cargando…</div>;
+  }
+
+  // Si quieres forzar auth:
+  // if (!auth.currentUser) return <div className="p-6">Inicia sesión para crear facturas.</div>;
+
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
-      {/* --- UI igual a la que ya tenías --- */}
-      {/* No he tocado markup salvo disabled={lockedByTemplate} */}
-      {/* … */}
+    <div className="max-w-4xl mx-auto space-y-6 p-4">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3">
+        <button className="flex items-center gap-2 text-sm" onClick={onBack}>
+          <ChevronLeft size={18} />
+          {t.back ?? 'Volver'}
+        </button>
+
+        <div className="flex items-center gap-2">
+          <button className="flex items-center gap-2 px-3 py-2 border rounded" onClick={handleSave} disabled={!selectedClientId}>
+            <Save size={18} />
+            {t.save ?? 'Guardar'}
+          </button>
+        </div>
+      </div>
+
+      {/* Basic meta */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <div className="text-sm opacity-70">Número</div>
+          <input className="w-full border rounded px-3 py-2" value={invoiceNumber} disabled />
+        </div>
+
+        <div className="space-y-2">
+          <div className="text-sm opacity-70">Fecha</div>
+          <input
+            className="w-full border rounded px-3 py-2"
+            type="date"
+            value={invoiceDate}
+            onChange={(e) => setInvoiceDate(e.target.value)}
+            disabled={lockedByTemplate}
+          />
+        </div>
+
+        <div className="space-y-2">
+          <div className="text-sm opacity-70">Plantilla</div>
+          <select className="w-full border rounded px-3 py-2" value={selectedTemplateId} onChange={(e) => onSelectTemplate(e.target.value)}>
+            <option value="">—</option>
+            {templates.map((x) => (
+              <option key={x.id} value={x.id}>
+                {(x as any).name || x.id}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="space-y-2">
+          <div className="text-sm opacity-70">Emisor</div>
+          <select
+            className="w-full border rounded px-3 py-2"
+            value={selectedIssuerId}
+            onChange={(e) => onSelectIssuer(e.target.value)}
+            disabled={lockedByTemplate}
+          >
+            <option value="">—</option>
+            {issuers.map((x: any) => (
+              <option key={x.id} value={x.id}>
+                {x.name || x.taxId || x.id}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="space-y-2 md:col-span-2">
+          <div className="text-sm opacity-70">Cliente</div>
+          <select
+            className="w-full border rounded px-3 py-2"
+            value={selectedClientId}
+            onChange={(e) => onSelectClient(e.target.value)}
+            disabled={lockedByTemplate}
+          >
+            <option value="">—</option>
+            {clients.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name} {c.taxId ? `(${c.taxId})` : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* Items */}
+      <div className="border rounded">
+        <div className="flex items-center justify-between p-3 border-b">
+          <div className="font-medium">Líneas</div>
+          <button className="flex items-center gap-2 px-3 py-2 border rounded" onClick={addItem} disabled={lockedByTemplate}>
+            <Plus size={18} />
+            Añadir línea
+          </button>
+        </div>
+
+        <div className="p-3 space-y-2">
+          {items.length === 0 ? (
+            <div className="text-sm opacity-70">Sin líneas</div>
+          ) : (
+            items.map((it) => (
+              <div key={it.id} className="grid grid-cols-1 md:grid-cols-6 gap-2 items-center">
+                <input
+                  className="md:col-span-3 border rounded px-3 py-2"
+                  placeholder="Descripción"
+                  value={it.description}
+                  onChange={(e) => updateItem(it.id, { description: e.target.value })}
+                  disabled={lockedByTemplate}
+                />
+                <input
+                  className="md:col-span-1 border rounded px-3 py-2"
+                  type="number"
+                  value={it.quantity}
+                  onChange={(e) => updateItem(it.id, { quantity: Number(e.target.value) })}
+                  disabled={lockedByTemplate}
+                />
+                <input
+                  className="md:col-span-1 border rounded px-3 py-2"
+                  type="number"
+                  value={it.unitCost}
+                  onChange={(e) => updateItem(it.id, { unitCost: Number(e.target.value) })}
+                  disabled={lockedByTemplate}
+                />
+                <input className="md:col-span-1 border rounded px-3 py-2" value={(Number(it.amount) || 0).toFixed(2)} disabled />
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Totals */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="space-y-2">
+          <div className="text-sm opacity-70">IVA %</div>
+          <input
+            className="w-full border rounded px-3 py-2"
+            type="number"
+            value={vatRate}
+            onChange={(e) => setVatRate(Number(e.target.value))}
+            disabled={lockedByTemplate}
+          />
+        </div>
+        <div className="space-y-2">
+          <div className="text-sm opacity-70">IRPF %</div>
+          <input
+            className="w-full border rounded px-3 py-2"
+            type="number"
+            value={irpfRate}
+            onChange={(e) => setIrpfRate(Number(e.target.value))}
+            disabled={lockedByTemplate}
+          />
+        </div>
+        <div className="space-y-2">
+          <div className="text-sm opacity-70">Estado</div>
+          <select className="w-full border rounded px-3 py-2" value={status} onChange={(e) => setStatus(e.target.value as any)} disabled={lockedByTemplate}>
+            <option value="DRAFT">DRAFT</option>
+            <option value="SENT">SENT</option>
+            <option value="PAID">PAID</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Debug mínimo por si falta algo clave */}
+      {!selectedClientId && <div className="text-sm text-red-600">Selecciona un cliente para poder guardar.</div>}
     </div>
   );
 };

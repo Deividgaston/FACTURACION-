@@ -29,6 +29,9 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
 
       setLoading(true);
       try {
+        // Si quieres filtrar por emisor activo en el futuro:
+        // const issuerId = store.getActiveIssuerId();
+        // const list = await store.loadInvoicesOnce(uid, { issuerId });
         const list = await store.loadInvoicesOnce(uid);
         if (alive) setInvoices(list);
       } finally {
@@ -43,15 +46,18 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
   }, []);
 
   const filteredInvoices = useMemo(() => {
-    return invoices
-      .filter(inv => {
-        const matchesFilter = filter === 'ALL' || inv.status === filter;
-        const matchesSearch =
-          inv.recipient.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          inv.number.includes(searchTerm);
-        return matchesFilter && matchesSearch;
-      })
-      .reverse();
+    const s = searchTerm.trim().toLowerCase();
+
+    return invoices.filter(inv => {
+      const matchesFilter = filter === 'ALL' || inv.status === filter;
+      const matchesSearch =
+        !s ||
+        inv.recipient.name.toLowerCase().includes(s) ||
+        inv.number.toLowerCase().includes(s);
+
+      return matchesFilter && matchesSearch;
+    });
+    // OJO: NO reverse(); Firestore ya viene orderBy(updatedAt,'desc')
   }, [invoices, filter, searchTerm]);
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
@@ -61,14 +67,15 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
     const uid = auth.currentUser?.uid;
     if (!uid) return;
 
-    // UI optimista + caché ya queda limpia en store.deleteInvoice
+    // UI optimista
+    const prev = invoices;
     setInvoices(prev => prev.filter(i => i.id !== id));
 
     try {
       await store.deleteInvoice(uid, id);
     } catch {
-      // Si falla, re-cargamos desde caché/Firestore (1 query solo si aún no estaba cargado;
-      // si estaba cargado, loadInvoicesOnce devuelve caché)
+      // rollback + recarga “source of truth”
+      setInvoices(prev);
       const list = await store.loadInvoicesOnce(uid, { force: true });
       setInvoices(list);
     }
@@ -97,6 +104,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
             className="w-full pl-10 pr-4 py-2 bg-slate-50 border-none rounded-xl outline-none focus:ring-2 focus:ring-indigo-100"
           />
         </div>
+
         <div className="flex items-center gap-2 overflow-x-auto w-full md:w-auto pb-2 md:pb-0">
           {(['ALL', 'DRAFT', 'ISSUED', 'PAID', 'CANCELLED'] as const).map(s => (
             <button

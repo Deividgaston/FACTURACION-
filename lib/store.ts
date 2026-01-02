@@ -18,7 +18,9 @@ import {
   type QueryDocumentSnapshot,
   type DocumentData
 } from 'firebase/firestore';
-import { db } from '../firebase';
+
+// ✅ FIX: store.ts está en src/lib -> firebase está en el mismo directorio
+import { db } from './firebase';
 
 const STORAGE_KEYS = {
   INVOICES: 'si_invoices', // legacy local cache / migration

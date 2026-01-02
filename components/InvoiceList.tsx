@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Search, Trash2 } from 'lucide-react';
+import { Search, Trash2, Printer } from 'lucide-react';
 import { STATUS_COLORS } from '../constants';
-import { InvoiceStatus, Invoice } from '../types';
+import { InvoiceStatus, Invoice, Language } from '../types';
 import { store } from '../lib/store';
 import { auth } from '../lib/firebase';
 
@@ -25,6 +25,10 @@ const getInvDate = (inv: any): Date | null => {
   }
 };
 
+// 🔑 para imprimir desde lista (handoff al editor)
+const LS_PRINT_INVOICE_ID = 'si_print_invoice_id';
+const LS_PRINT_LANG = 'si_print_lang';
+
 const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
   const [filter, setFilter] = useState<InvoiceStatus | 'ALL'>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
@@ -34,6 +38,9 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
   // ✅ filtros mes/año
   const [yearFilter, setYearFilter] = useState<string>('ALL');
   const [monthFilter, setMonthFilter] = useState<string>('ALL'); // 1..12
+
+  // Print language por fila (default ES)
+  const [rowPrintLang, setRowPrintLang] = useState<Record<string, Language>>({});
 
   const reload = async (force = false, alive?: { current: boolean }) => {
     const uid = auth.currentUser?.uid;
@@ -58,7 +65,6 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
     reload(false, alive);
 
     const onMaybeRefresh = async () => {
-      // visibilitychange dispara también al ocultar; solo recargamos al volver a visible
       if (document.visibilityState && document.visibilityState !== 'visible') return;
 
       if (localStorage.getItem('si_invoices_dirty') === '1') {
@@ -100,8 +106,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
 
       const d = getInvDate(inv);
       const matchesYear = yearFilter === 'ALL' ? true : d ? String(d.getFullYear()) === yearFilter : false;
-      const matchesMonth =
-        monthFilter === 'ALL' ? true : d ? String(d.getMonth() + 1) === monthFilter : false;
+      const matchesMonth = monthFilter === 'ALL' ? true : d ? String(d.getMonth() + 1) === monthFilter : false;
 
       return matchesFilter && matchesSearch && matchesYear && matchesMonth;
     });
@@ -119,12 +124,43 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
 
     try {
       await store.deleteInvoice(uid, id);
-      // coherencia si hay otras pantallas abiertas
       localStorage.setItem('si_invoices_dirty', '1');
     } catch {
       setInvoices(prev);
       await reload(true);
     }
+  };
+
+  const handleChangeStatus = async (inv: Invoice, nextStatus: InvoiceStatus, e: React.ChangeEvent<HTMLSelectElement>) => {
+    e.stopPropagation();
+
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+
+    const prevInvoices = invoices;
+
+    // Optimista
+    setInvoices((prev) => prev.map((x) => (x.id === inv.id ? ({ ...x, status: nextStatus } as any) : x)));
+
+    try {
+      await store.saveInvoice(uid, { ...(inv as any), status: nextStatus } as Invoice);
+      localStorage.setItem('si_invoices_dirty', '1');
+    } catch (err) {
+      console.error('Error actualizando estado:', err);
+      setInvoices(prevInvoices);
+      await reload(true);
+    }
+  };
+
+  const handlePrint = (inv: Invoice, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const lang = rowPrintLang[String(inv.id)] || 'ES';
+
+    // handoff al editor (que tiene el layout de factura)
+    localStorage.setItem(LS_PRINT_INVOICE_ID, String(inv.id));
+    localStorage.setItem(LS_PRINT_LANG, String(lang));
+
+    onEdit(String(inv.id));
   };
 
   return (
@@ -213,7 +249,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
               <th className="py-4 px-6">Cliente</th>
               <th className="py-4 px-6 text-right">Importe</th>
               <th className="py-4 px-6 text-center">Estado</th>
-              <th className="py-4 px-6"></th>
+              <th className="py-4 px-6 text-right">Acciones</th>
             </tr>
           </thead>
 
@@ -228,6 +264,8 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
               filteredInvoices.map((inv: any) => {
                 const statusKey = ((inv as any)?.status || 'DRAFT') as keyof typeof STATUS_COLORS;
                 const statusClass = STATUS_COLORS[statusKey] || STATUS_COLORS.DRAFT;
+                const invId = String(inv.id);
+                const plang = rowPrintLang[invId] || 'ES';
 
                 return (
                   <tr
@@ -240,18 +278,52 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ onEdit, onNew }) => {
                     <td className="py-5 px-6 text-right font-black text-slate-900">
                       {(Number(inv.total) || 0).toFixed(2)} €
                     </td>
+
+                    {/* Estado -> dropdown */}
                     <td className="py-5 px-6">
                       <div className="flex justify-center">
-                        <span className={`px-3 py-1 rounded-full text-[10px] font-black border ${statusClass}`}>
-                          {statusKey}
-                        </span>
+                        <select
+                          className={`px-3 py-1 rounded-full text-[10px] font-black border ${statusClass} bg-white`}
+                          value={statusKey}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => handleChangeStatus(inv as Invoice, e.target.value as any, e)}
+                        >
+                          <option value="DRAFT">DRAFT</option>
+                          <option value="ISSUED">ISSUED</option>
+                          <option value="PAID">PAID</option>
+                          <option value="CANCELLED">CANCELLED</option>
+                        </select>
                       </div>
                     </td>
+
+                    {/* Acciones -> imprimir + idioma + borrar */}
                     <td className="py-5 px-6 text-right">
                       <div className="flex items-center justify-end gap-2">
+                        <select
+                          className="px-2 py-1 rounded-lg border border-slate-200 bg-white text-xs font-bold text-slate-600"
+                          value={plang}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            setRowPrintLang((p) => ({ ...p, [invId]: e.target.value as Language }));
+                          }}
+                        >
+                          <option value="ES">ES</option>
+                          <option value="EN">EN</option>
+                        </select>
+
+                        <button
+                          onClick={(e) => handlePrint(inv as Invoice, e)}
+                          className="p-2 text-slate-300 hover:text-slate-700 rounded-lg transition-all"
+                          title="Imprimir / Guardar PDF"
+                        >
+                          <Printer size={18} />
+                        </button>
+
                         <button
                           onClick={(e) => handleDelete(inv.id, e)}
                           className="p-2 text-slate-300 hover:text-red-600 rounded-lg transition-all"
+                          title="Eliminar"
                         >
                           <Trash2 size={18} />
                         </button>

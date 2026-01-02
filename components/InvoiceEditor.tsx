@@ -12,10 +12,7 @@ interface InvoiceEditorProps {
   invoiceId?: string;
 }
 
-// Cliente = Party + id (para selector y listado)
 type Client = Party & { id: string };
-
-// Template con id
 type Template = InvoiceTemplate & { id: string };
 
 const isFilled = (v: any) => {
@@ -47,20 +44,47 @@ const safeItemsFromTemplate = (tpl: any): InvoiceItem[] => {
   });
 };
 
+const toDateInputValue = (d: Date) => {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+const parseInvoiceDateToInput = (v: any) => {
+  try {
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return toDateInputValue(new Date());
+    return toDateInputValue(d);
+  } catch {
+    return toDateInputValue(new Date());
+  }
+};
+
+const buildIsoFromDateInput = (dateStr: string) => {
+  // dateStr: YYYY-MM-DD -> ISO con mediodía (evita líos de timezone en algunos navegadores)
+  const [y, m, d] = String(dateStr).split('-').map((x) => Number(x));
+  const dt = new Date(y, (m || 1) - 1, d || 1, 12, 0, 0, 0);
+  return dt.toISOString();
+};
+
+const addDaysIso = (iso: string, days: number) => {
+  const d = new Date(iso);
+  d.setDate(d.getDate() + days);
+  return d.toISOString();
+};
+
 const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const [loading, setLoading] = useState(true);
 
-  // Firestore settings (source of truth)
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [issuers, setIssuers] = useState<Issuer[]>([]);
   const [activeIssuerId, setActiveIssuerId] = useState<string>('');
 
-  // Clients Firestore
   const [clients, setClients] = useState<Client[]>([]);
 
-  // Templates Firestore
   const [templates, setTemplates] = useState<Template[]>([]);
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string>(''); // solo para NEW
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
 
   const [step, setStep] = useState(1);
   const [lang, setLang] = useState<Language>('ES');
@@ -71,10 +95,11 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const [selectedClientId, setSelectedClientId] = useState('');
   const [invoiceNumber, setInvoiceNumber] = useState('');
 
-  // Multi-issuer selection
+  // ✅ NUEVO: fecha editable (YYYY-MM-DD)
+  const [invoiceDate, setInvoiceDate] = useState<string>(toDateInputValue(new Date()));
+
   const [selectedIssuerId, setSelectedIssuerId] = useState<string>('');
 
-  // Snapshot used for invoice save & print
   const [issuer, setIssuer] = useState<Party>({
     name: '—',
     taxId: '—',
@@ -117,10 +142,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     return { list, active };
   };
 
-  const loadAllOnce = async (
-    uid: string
-  ): Promise<{ s: AppSettings; issuersList: Issuer[]; active: string }> => {
-    // 1) settings (1 lectura)
+  const loadAllOnce = async (uid: string): Promise<{ s: AppSettings; issuersList: Issuer[]; active: string }> => {
     const sSnap = await getDoc(settingsRef(uid));
 
     let s: AppSettings;
@@ -139,11 +161,9 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
     const { list: issuersList, active } = applySettings(s);
 
-    // 2) clients
     const cl = await store.loadClientsOnce(uid);
     setClients(cl as Client[]);
 
-    // 3) templates
     await store.migrateLocalTemplatesToFirestoreOnce(uid);
     const tpl = await store.loadTemplatesOnce(uid);
     setTemplates((Array.isArray(tpl) ? (tpl as any[]) : []) as Template[]);
@@ -174,17 +194,11 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     if (tpl.lang === 'EN' || tpl.lang === 'ES') setLang(tpl.lang as Language);
 
     const tplItems = safeItemsFromTemplate(tpl as any);
-    if (tplItems.length) {
-      setItems(tplItems);
-    } else {
-      setItems([{ id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }]);
-    }
+    if (tplItems.length) setItems(tplItems);
+    else setItems([{ id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }]);
 
-    const vr = safeNum((tpl as any).vatRate, 21);
-    const ir = safeNum((tpl as any).irpfRate, 15);
-    setVatRate(vr);
-    setIrpfRate(ir);
-
+    setVatRate(safeNum((tpl as any).vatRate, 21));
+    setIrpfRate(safeNum((tpl as any).irpfRate, 15));
     setStatus('DRAFT');
   };
 
@@ -202,7 +216,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         const { s, issuersList, active } = await loadAllOnce(uid);
         if (!alive) return;
 
-        // EDIT
         if (invoiceId && invoiceId !== 'new') {
           const inv = await store.getInvoice(uid, invoiceId);
           if (!alive || !inv) return;
@@ -215,28 +228,26 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
           setLang(inv.lang);
           setInvoiceNumber(inv.number);
           setSelectedClientId((inv as any).clientId || '');
-
           setIssuer((inv as any).issuer);
-
           setSelectedTemplateId((inv as any).templateId || '');
 
+          // ✅ fecha desde factura
+          setInvoiceDate(parseInvoiceDateToInput((inv as any).date));
+
           const invIssuerId = (inv as any).issuerId as string | undefined;
-          if (invIssuerId) {
-            setSelectedIssuerId(invIssuerId);
-          } else {
+          if (invIssuerId) setSelectedIssuerId(invIssuerId);
+          else {
             const match = issuersList.find(
               (i) => i.taxId === (inv as any).issuer.taxId && i.name === (inv as any).issuer.name
             );
             if (match) setSelectedIssuerId(match.id);
           }
-
           return;
         }
 
         // NEW
         const year = new Date().getFullYear();
         const current = (s.yearCounter?.[year] || 0) + 1;
-
         setInvoiceNumber(`${year}${current.toString().padStart(4, '0')}`);
 
         setItems([{ id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }]);
@@ -245,9 +256,11 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         setLang('ES');
         setStatus('DRAFT');
 
+        // ✅ default fecha hoy
+        setInvoiceDate(toDateInputValue(new Date()));
+
         const activeId = s.activeIssuerId || active || issuersList[0]?.id || '';
         const activeIssuer = issuersList.find((x) => x.id === activeId) || issuersList[0];
-
         if (activeIssuer) {
           setSelectedIssuerId(activeIssuer.id);
           setIssuer({
@@ -334,6 +347,10 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
     const id = invoiceId && invoiceId !== 'new' ? invoiceId : Date.now().toString();
 
+    // ✅ fecha ISO desde input
+    const dateIso = buildIsoFromDateInput(invoiceDate);
+    const dueIso = addDaysIso(dateIso, 30);
+
     const newInvoice: any = {
       id,
       number: invoiceNumber,
@@ -342,8 +359,8 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       recipient,
       clientId: selectedClientId,
       templateId: selectedTemplateId || null,
-      date: new Date().toISOString(),
-      dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      date: dateIso,
+      dueDate: dueIso,
       status,
       lang,
       items,
@@ -383,13 +400,9 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   };
 
   const addItem = () => {
-    setItems([
-      ...items,
-      { id: Date.now().toString(), description: '', quantity: 1, unitCost: 0, amount: 0 }
-    ]);
+    setItems([...items, { id: Date.now().toString(), description: '', quantity: 1, unitCost: 0, amount: 0 }]);
   };
 
-  // ✅ FIX: guardar SIEMPRE números en quantity/unitCost/amount (evita crash por toFixed)
   const updateItem = (id: string, field: keyof InvoiceItem, value: string | number) => {
     setItems(
       items.map((item) => {
@@ -418,7 +431,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
           return updated;
         }
 
-        // description u otros
         (updated as any)[field] = value as any;
         return updated;
       })
@@ -440,10 +452,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       `}</style>
 
       <div className="flex items-center justify-between no-print">
-        <button
-          onClick={onBack}
-          className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition-colors"
-        >
+        <button onClick={onBack} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition-colors">
           <ChevronLeft size={20} /> Volver
         </button>
         <div className="flex gap-3">
@@ -470,11 +479,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
           <div key={s} className="flex items-center gap-3">
             <div
               className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${
-                step === s
-                  ? 'bg-indigo-600 text-white'
-                  : step > s
-                    ? 'bg-indigo-100 text-indigo-600'
-                    : 'bg-slate-100 text-slate-400'
+                step === s ? 'bg-indigo-600 text-white' : step > s ? 'bg-indigo-100 text-indigo-600' : 'bg-slate-100 text-slate-400'
               }`}
             >
               {step > s ? <CheckCircle size={16} /> : s}
@@ -500,6 +505,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
               )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Cliente */}
                 <div className="space-y-2">
                   <label className="text-sm font-semibold text-slate-600">Cliente</label>
                   <select
@@ -524,12 +530,9 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                       </option>
                     ))}
                   </select>
-
-                  {!loading && clients.length === 0 && (
-                    <p className="text-xs text-slate-400">No hay clientes cargados (o aún no se han leído de Firestore).</p>
-                  )}
                 </div>
 
+                {/* Nº Factura */}
                 <div className="space-y-2">
                   <label className="text-sm font-semibold text-slate-600">Nº Factura</label>
                   <input
@@ -540,7 +543,20 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   />
                 </div>
 
-                <div className="space-y-2 md:col-span-2">
+                {/* ✅ Fecha */}
+                <div className="space-y-2">
+                  <label className="text-sm font-semibold text-slate-600">Fecha</label>
+                  <input
+                    type="date"
+                    value={invoiceDate}
+                    onChange={(e) => setInvoiceDate(e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
+                    disabled={loading}
+                  />
+                </div>
+
+                {/* Emisor */}
+                <div className="space-y-2">
                   <label className="text-sm font-semibold text-slate-600">Emisor</label>
                   <select
                     className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
@@ -556,6 +572,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   </select>
                 </div>
 
+                {/* Plantilla (solo NEW) */}
                 {isNew && (
                   <div className="space-y-2 md:col-span-2">
                     <label className="text-sm font-semibold text-slate-600">Plantilla (opcional)</label>
@@ -572,10 +589,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                         </option>
                       ))}
                     </select>
-
-                    {!loading && templates.length === 0 && (
-                      <p className="text-xs text-slate-400">No hay plantillas aún.</p>
-                    )}
                   </div>
                 )}
               </div>
@@ -614,7 +627,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   <Plus size={16} /> Añadir Línea
                 </button>
               </div>
-
               <div className="space-y-4">
                 {items.map((item) => (
                   <div key={item.id} className="grid grid-cols-12 gap-3 items-end p-4 bg-slate-50 rounded-2xl">
@@ -713,9 +725,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                 </button>
               </div>
 
-              <p className="text-center text-slate-400 text-sm">
-                Previsualización debajo. Dale a Imprimir para generar el PDF.
-              </p>
+              <p className="text-center text-slate-400 text-sm">Previsualización debajo. Dale a Imprimir para generar el PDF.</p>
             </div>
           )}
         </div>
@@ -740,6 +750,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         </div>
       </div>
 
+      {/* Area Imprimible */}
       <div className={`printable-area bg-white p-12 border rounded shadow-sm ${step === 4 ? 'block' : 'hidden'}`}>
         <div className="flex justify-between mb-12">
           <div>
@@ -764,7 +775,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
           </div>
           <div className="text-right">
             <p className="text-[10px] font-bold text-slate-400 uppercase mb-2">{t.date}</p>
-            <p className="font-bold">{new Date().toLocaleDateString()}</p>
+            <p className="font-bold">{new Date(buildIsoFromDateInput(invoiceDate)).toLocaleDateString()}</p>
           </div>
         </div>
 

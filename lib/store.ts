@@ -94,7 +94,7 @@ function migrateSettings(raw: any): AppSettings {
  *  FASE 2: cache en memoria
  * -----------------------------
  * - 1 query por pantalla (listado): loadInvoicesOnce()
- * - editor: getInvoiceCached() -> 0 lecturas si está; si no, 1 getDoc
+ * - editor: getInvoice() -> 0 lecturas si está; si no, 1 getDoc
  */
 type InvoicesCacheKey = string; // `${uid}::${issuerId||'*'}`
 
@@ -106,6 +106,34 @@ const _invoiceCache = {
 };
 
 const invoicesKey = (uid: string, issuerId?: string) => `${uid}::${issuerId || '*'}`;
+
+/**
+ * 🔔 listeners locales (NO Firestore listeners)
+ * Para refrescar listas en UI sin lecturas extra.
+ */
+type InvoicesChangedCb = (payload: { uid: string }) => void;
+const _invoiceListeners = new Set<InvoicesChangedCb>();
+
+function emitInvoicesChanged(uid: string) {
+  _invoiceListeners.forEach((cb) => {
+    try {
+      cb({ uid });
+    } catch {
+      // noop
+    }
+  });
+}
+
+function touchLoadedInvoicesList(key: InvoicesCacheKey, id: string) {
+  if (!_invoiceCache.loadedByKey.has(key)) return;
+  const current = _invoiceCache.listIdsByKey.get(key) || [];
+  if (!current.includes(id)) {
+    _invoiceCache.listIdsByKey.set(key, [id, ...current]);
+  } else {
+    // mover arriba (como “más reciente”)
+    _invoiceCache.listIdsByKey.set(key, [id, ...current.filter((x) => x !== id)]);
+  }
+}
 
 /**
  * Normaliza la factura para Firestore.
@@ -162,7 +190,7 @@ function touchLoadedClientsList(key: ClientsCacheKey, id: string) {
   if (!current.includes(id)) {
     _clientCache.listIdsByKey.set(key, [id, ...current]);
   } else {
-    _clientCache.listIdsByKey.set(key, [id, ...current.filter(x => x !== id)]);
+    _clientCache.listIdsByKey.set(key, [id, ...current.filter((x) => x !== id)]);
   }
 }
 
@@ -170,10 +198,6 @@ function touchLoadedClientsList(key: ClientsCacheKey, id: string) {
  * -----------------------------
  *  TEMPLATES: Firestore + cache
  * -----------------------------
- * Cambios mínimos:
- * - Guardado/lectura desde colección "templates"
- * - ownerUid + updatedAt/createdAt para reglas y ordenación
- * - migración 1 vez desde localStorage si existían
  */
 type TemplatesCacheKey = string; // `${uid}`
 
@@ -206,12 +230,30 @@ function touchLoadedTemplatesList(key: TemplatesCacheKey, id: string) {
   if (!current.includes(id)) {
     _templateCache.listIdsByKey.set(key, [id, ...current]);
   } else {
-    _templateCache.listIdsByKey.set(key, [id, ...current.filter(x => x !== id)]);
+    _templateCache.listIdsByKey.set(key, [id, ...current.filter((x) => x !== id)]);
   }
 }
 
 export const store = {
   // -------- Invoices (Firestore) --------
+
+  /**
+   * Hook local: la UI puede escuchar cambios SIN Firestore listeners.
+   */
+  onInvoicesChanged: (cb: InvoicesChangedCb) => {
+    _invoiceListeners.add(cb);
+    return () => _invoiceListeners.delete(cb);
+  },
+
+  /**
+   * Devuelve la lista cacheada (0 lecturas). Si no hay cache, [].
+   */
+  getCachedInvoices: (uid: string, opts?: { issuerId?: string }): Invoice[] => {
+    const key = invoicesKey(uid, opts?.issuerId);
+    if (!_invoiceCache.loadedByKey.has(key)) return [];
+    const ids = _invoiceCache.listIdsByKey.get(key) || [];
+    return ids.map((id) => _invoiceCache.byId.get(id)!).filter(Boolean);
+  },
 
   loadInvoicesOnce: async (
     uid: string,
@@ -223,7 +265,7 @@ export const store = {
 
     if (!opts?.force && _invoiceCache.loadedByKey.has(key)) {
       const ids = _invoiceCache.listIdsByKey.get(key) || [];
-      return ids.map(id => _invoiceCache.byId.get(id)!).filter(Boolean);
+      return ids.map((id) => _invoiceCache.byId.get(id)!).filter(Boolean);
     }
 
     const col = collection(db, 'invoices');
@@ -239,7 +281,7 @@ export const store = {
     const snap = await getDocs(q);
 
     const ids: string[] = [];
-    snap.forEach(d => {
+    snap.forEach((d) => {
       const inv = fromFirestoreInvoice(d.id, d.data());
       _invoiceCache.byId.set(inv.id, inv);
       ids.push(inv.id);
@@ -250,7 +292,7 @@ export const store = {
     _invoiceCache.listIdsByKey.set(key, ids);
     _invoiceCache.loadedByKey.add(key);
 
-    return ids.map(id => _invoiceCache.byId.get(id)!).filter(Boolean);
+    return ids.map((id) => _invoiceCache.byId.get(id)!).filter(Boolean);
   },
 
   loadMoreInvoices: async (
@@ -279,7 +321,7 @@ export const store = {
     const existing = _invoiceCache.listIdsByKey.get(key) || [];
     const newIds: string[] = [];
 
-    snap.forEach(d => {
+    snap.forEach((d) => {
       const inv = fromFirestoreInvoice(d.id, d.data());
       _invoiceCache.byId.set(inv.id, inv);
       if (!existing.includes(inv.id)) newIds.push(inv.id);
@@ -291,7 +333,7 @@ export const store = {
     const newLast = snap.docs.length ? snap.docs[snap.docs.length - 1] : null;
     _invoiceCache.lastDocByKey.set(key, newLast);
 
-    return newIds.map(id => _invoiceCache.byId.get(id)!).filter(Boolean);
+    return newIds.map((id) => _invoiceCache.byId.get(id)!).filter(Boolean);
   },
 
   getInvoice: async (uid: string, id: string): Promise<Invoice | null> => {
@@ -310,20 +352,35 @@ export const store = {
   },
 
   saveInvoice: async (uid: string, invoice: Invoice, opts?: { issuerId?: string }) => {
+    // cache local instantánea
     _invoiceCache.byId.set(invoice.id, invoice);
 
+    // ✅ actualizar listas cacheadas (sin lecturas extra)
+    const effIssuerId = (invoice as any)?.issuerId || opts?.issuerId || undefined;
+
+    // lista por emisor (si existe)
+    if (effIssuerId) touchLoadedInvoicesList(invoicesKey(uid, String(effIssuerId)), invoice.id);
+
+    // lista global
+    touchLoadedInvoicesList(invoicesKey(uid, undefined), invoice.id);
+
+    // persist
     const ref = doc(db, 'invoices', invoice.id);
     await setDoc(ref, toFirestoreInvoice(uid, invoice, opts?.issuerId), { merge: true });
+
+    emitInvoicesChanged(uid);
   },
 
   deleteInvoice: async (uid: string, id: string) => {
     _invoiceCache.byId.delete(id);
     for (const [k, ids] of _invoiceCache.listIdsByKey.entries()) {
-      if (ids.includes(id)) _invoiceCache.listIdsByKey.set(k, ids.filter(x => x !== id));
+      if (ids.includes(id)) _invoiceCache.listIdsByKey.set(k, ids.filter((x) => x !== id));
     }
 
     const ref = doc(db, 'invoices', id);
     await deleteDoc(ref);
+
+    emitInvoicesChanged(uid);
   },
 
   migrateLocalInvoicesToFirestoreOnce: async (uid: string, opts?: { issuerId?: string }) => {
@@ -356,7 +413,7 @@ export const store = {
 
     if (!opts?.force && _clientCache.loadedByKey.has(key)) {
       const ids = _clientCache.listIdsByKey.get(key) || [];
-      return ids.map(id => _clientCache.byId.get(id)!).filter(Boolean);
+      return ids.map((id) => _clientCache.byId.get(id)!).filter(Boolean);
     }
 
     const col = collection(db, 'clients');
@@ -365,7 +422,7 @@ export const store = {
     const snap = await getDocs(q);
     const ids: string[] = [];
 
-    snap.forEach(d => {
+    snap.forEach((d) => {
       const c = fromFirestoreClient(d.id, d.data());
       _clientCache.byId.set(c.id, c);
       ids.push(c.id);
@@ -376,7 +433,7 @@ export const store = {
     _clientCache.listIdsByKey.set(key, ids);
     _clientCache.loadedByKey.add(key);
 
-    return ids.map(id => _clientCache.byId.get(id)!).filter(Boolean);
+    return ids.map((id) => _clientCache.byId.get(id)!).filter(Boolean);
   },
 
   saveClient: async (uid: string, client: Client) => {
@@ -391,7 +448,7 @@ export const store = {
     _clientCache.byId.delete(id);
     const key = clientsKey(uid);
     const ids = _clientCache.listIdsByKey.get(key) || [];
-    if (ids.includes(id)) _clientCache.listIdsByKey.set(key, ids.filter(x => x !== id));
+    if (ids.includes(id)) _clientCache.listIdsByKey.set(key, ids.filter((x) => x !== id));
 
     const ref = doc(db, 'clients', id);
     await deleteDoc(ref);
@@ -419,16 +476,8 @@ export const store = {
 
   // -------- Templates (Firestore) --------
 
-  /**
-   * Legacy local (solo para migración/compatibilidad)
-   */
   getTemplates: (): InvoiceTemplate[] => JSON.parse(localStorage.getItem(STORAGE_KEYS.TEMPLATES) || '[]'),
 
-  /**
-   * Listado: 1 query por pantalla.
-   * - Si ya está cargado para uid, devuelve caché sin leer.
-   * - `force=true` obliga a recargar.
-   */
   loadTemplatesOnce: async (
     uid: string,
     opts?: { pageSize?: number; force?: boolean }
@@ -438,21 +487,16 @@ export const store = {
 
     if (!opts?.force && _templateCache.loadedByKey.has(key)) {
       const ids = _templateCache.listIdsByKey.get(key) || [];
-      return ids.map(id => _templateCache.byId.get(id)!).filter(Boolean);
+      return ids.map((id) => _templateCache.byId.get(id)!).filter(Boolean);
     }
 
     const col = collection(db, 'templates');
-    const q = query(
-      col,
-      where('ownerUid', '==', uid),
-      orderBy('updatedAt', 'desc'),
-      limit(pageSize)
-    );
+    const q = query(col, where('ownerUid', '==', uid), orderBy('updatedAt', 'desc'), limit(pageSize));
 
     const snap = await getDocs(q);
     const ids: string[] = [];
 
-    snap.forEach(d => {
+    snap.forEach((d) => {
       const t = fromFirestoreTemplate(d.id, d.data());
       _templateCache.byId.set(t.id, t);
       ids.push(t.id);
@@ -463,7 +507,7 @@ export const store = {
     _templateCache.listIdsByKey.set(key, ids);
     _templateCache.loadedByKey.add(key);
 
-    return ids.map(id => _templateCache.byId.get(id)!).filter(Boolean);
+    return ids.map((id) => _templateCache.byId.get(id)!).filter(Boolean);
   },
 
   saveTemplate: async (uid: string, tpl: InvoiceTemplate) => {
@@ -478,15 +522,12 @@ export const store = {
     _templateCache.byId.delete(id);
     const key = templatesKey(uid);
     const ids = _templateCache.listIdsByKey.get(key) || [];
-    if (ids.includes(id)) _templateCache.listIdsByKey.set(key, ids.filter(x => x !== id));
+    if (ids.includes(id)) _templateCache.listIdsByKey.set(key, ids.filter((x) => x !== id));
 
     const ref = doc(db, 'templates', id);
     await deleteDoc(ref);
   },
 
-  /**
-   * Migración 1 vez: pasa templates de localStorage a Firestore.
-   */
   migrateLocalTemplatesToFirestoreOnce: async (uid: string) => {
     const raw = localStorage.getItem(STORAGE_KEYS.TEMPLATES);
     if (!raw) return;
@@ -535,7 +576,7 @@ export const store = {
 
   getActiveIssuer: (): Issuer => {
     const s = store.getSettings();
-    return s.issuers.find(i => i.id === s.activeIssuerId) || s.issuers[0] || DEFAULT_ISSUER;
+    return s.issuers.find((i) => i.id === s.activeIssuerId) || s.issuers[0] || DEFAULT_ISSUER;
   },
 
   addIssuer: (issuer: Omit<Issuer, 'id'> & { id?: string }): Issuer => {
@@ -561,13 +602,13 @@ export const store = {
 
   updateIssuer: (issuer: Issuer) => {
     const settings = store.getSettings();
-    const issuers = settings.issuers.map(i => (i.id === issuer.id ? issuer : i));
+    const issuers = settings.issuers.map((i) => (i.id === issuer.id ? issuer : i));
     store.saveSettings({ ...settings, issuers });
   },
 
   deleteIssuer: (issuerId: string) => {
     const settings = store.getSettings();
-    const issuers = settings.issuers.filter(i => i.id !== issuerId);
+    const issuers = settings.issuers.filter((i) => i.id !== issuerId);
 
     const nextActive =
       settings.activeIssuerId === issuerId ? issuers[0]?.id || DEFAULT_ISSUER.id : settings.activeIssuerId;
@@ -577,13 +618,13 @@ export const store = {
     store.saveSettings({
       ...settings,
       issuers: safeIssuers,
-      activeIssuerId: safeIssuers.some(i => i.id === nextActive) ? nextActive : safeIssuers[0].id
+      activeIssuerId: safeIssuers.some((i) => i.id === nextActive) ? nextActive : safeIssuers[0].id
     });
   },
 
   setActiveIssuer: (issuerId: string) => {
     const settings = store.getSettings();
-    const exists = settings.issuers.some(i => i.id === issuerId);
+    const exists = settings.issuers.some((i) => i.id === issuerId);
     if (!exists) return;
     store.saveSettings({ ...settings, activeIssuerId: issuerId });
   }

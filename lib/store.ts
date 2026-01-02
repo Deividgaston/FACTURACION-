@@ -1,7 +1,6 @@
 import { Invoice, Party, AppSettings, InvoiceTemplate, Issuer, Client } from '../types';
 
 // 🔥 Firestore (modular SDK)
-// Ajusta la ruta según tu proyecto: por ejemplo '../firebase' o '../firebaseClient'
 import {
   collection,
   deleteDoc,
@@ -123,8 +122,6 @@ function toFirestoreInvoice(uid: string, invoice: Invoice, issuerId?: string) {
 }
 
 function fromFirestoreInvoice(id: string, data: any): Invoice {
-  // Mantén el shape original de Invoice tal cual lo uses en UI
-  // y no dependas de timestamps Firestore para pintar.
   const { ownerUid, updatedAt, createdAt, ...rest } = data || {};
   return { id, ...rest } as Invoice;
 }
@@ -133,8 +130,6 @@ function fromFirestoreInvoice(id: string, data: any): Invoice {
  * -----------------------------
  *  CLIENTS: cache en memoria
  * -----------------------------
- * - 1 query por pantalla: loadClientsOnce()
- * - operaciones optimistas: saveClient/deleteClient actualizan caché
  */
 type ClientsCacheKey = string; // `${uid}`
 
@@ -171,14 +166,53 @@ function touchLoadedClientsList(key: ClientsCacheKey, id: string) {
   }
 }
 
+/**
+ * -----------------------------
+ *  TEMPLATES: Firestore + cache
+ * -----------------------------
+ * Cambios mínimos:
+ * - Guardado/lectura desde colección "templates"
+ * - ownerUid + updatedAt/createdAt para reglas y ordenación
+ * - migración 1 vez desde localStorage si existían
+ */
+type TemplatesCacheKey = string; // `${uid}`
+
+const _templateCache = {
+  byId: new Map<string, InvoiceTemplate>(),
+  listIdsByKey: new Map<TemplatesCacheKey, string[]>(),
+  lastDocByKey: new Map<TemplatesCacheKey, QueryDocumentSnapshot<DocumentData> | null>(),
+  loadedByKey: new Set<TemplatesCacheKey>()
+};
+
+const templatesKey = (uid: string) => `${uid}`;
+
+function toFirestoreTemplate(uid: string, t: InvoiceTemplate) {
+  return {
+    ...t,
+    ownerUid: uid,
+    updatedAt: serverTimestamp(),
+    createdAt: (t as any).createdAt || serverTimestamp()
+  };
+}
+
+function fromFirestoreTemplate(id: string, data: any): InvoiceTemplate {
+  const { ownerUid, updatedAt, createdAt, ...rest } = data || {};
+  return { id, ...rest } as InvoiceTemplate;
+}
+
+function touchLoadedTemplatesList(key: TemplatesCacheKey, id: string) {
+  if (!_templateCache.loadedByKey.has(key)) return;
+  const current = _templateCache.listIdsByKey.get(key) || [];
+  if (!current.includes(id)) {
+    _templateCache.listIdsByKey.set(key, [id, ...current]);
+  } else {
+    _templateCache.listIdsByKey.set(key, [id, ...current.filter(x => x !== id)]);
+  }
+}
+
 export const store = {
   // -------- Invoices (Firestore) --------
 
-  /**
-   * Listado: 1 query por pantalla.
-   * - Si ya está cargado para (uid, issuerId), devuelve caché sin leer.
-   * - `force=true` obliga a recargar.
-   */
   loadInvoicesOnce: async (
     uid: string,
     opts?: { issuerId?: string; pageSize?: number; force?: boolean }
@@ -199,7 +233,6 @@ export const store = {
       limit(pageSize)
     ];
 
-    // Si quieres filtrar por emisor en listado (Fase 3 lo hará sí o sí)
     if (issuerId) clauses.unshift(where('issuerId', '==', issuerId));
 
     const q = query(col, ...clauses);
@@ -220,9 +253,6 @@ export const store = {
     return ids.map(id => _invoiceCache.byId.get(id)!).filter(Boolean);
   },
 
-  /**
-   * Paginación controlada (sigue siendo 1 query por “cargar más”).
-   */
   loadMoreInvoices: async (
     uid: string,
     opts?: { issuerId?: string; pageSize?: number }
@@ -264,9 +294,6 @@ export const store = {
     return newIds.map(id => _invoiceCache.byId.get(id)!).filter(Boolean);
   },
 
-  /**
-   * Editor: 0 lecturas si está en caché, si no 1 getDoc.
-   */
   getInvoice: async (uid: string, id: string): Promise<Invoice | null> => {
     const cached = _invoiceCache.byId.get(id);
     if (cached) return cached;
@@ -276,45 +303,29 @@ export const store = {
     if (!snap.exists()) return null;
 
     const inv = fromFirestoreInvoice(snap.id, snap.data());
-    // Seguridad extra: si por lo que sea llega una factura ajena, la ignoramos
     if ((snap.data() as any)?.ownerUid && (snap.data() as any).ownerUid !== uid) return null;
 
     _invoiceCache.byId.set(inv.id, inv);
     return inv;
   },
 
-  /**
-   * Guardado local-first:
-   * - Actualiza caché inmediatamente.
-   * - setDoc merge en Firestore.
-   */
   saveInvoice: async (uid: string, invoice: Invoice, opts?: { issuerId?: string }) => {
-    // cache local instantánea
     _invoiceCache.byId.set(invoice.id, invoice);
 
     const ref = doc(db, 'invoices', invoice.id);
     await setDoc(ref, toFirestoreInvoice(uid, invoice, opts?.issuerId), { merge: true });
-
-    // No hacemos getDoc de vuelta (evitamos lecturas extra)
   },
 
   deleteInvoice: async (uid: string, id: string) => {
-    // cache local
     _invoiceCache.byId.delete(id);
-    // elimina de todas las listas cacheadas
     for (const [k, ids] of _invoiceCache.listIdsByKey.entries()) {
       if (ids.includes(id)) _invoiceCache.listIdsByKey.set(k, ids.filter(x => x !== id));
     }
 
     const ref = doc(db, 'invoices', id);
-    // Nota: la seguridad real la imponen tus rules (ownerUid == auth.uid)
     await deleteDoc(ref);
   },
 
-  /**
-   * (Opcional) Migración 1 vez: pasa facturas de localStorage a Firestore.
-   * Útil si ya estabas probando en local.
-   */
   migrateLocalInvoicesToFirestoreOnce: async (uid: string, opts?: { issuerId?: string }) => {
     const raw = localStorage.getItem(STORAGE_KEYS.INVOICES);
     if (!raw) return;
@@ -327,32 +338,19 @@ export const store = {
     }
     if (!Array.isArray(invoices) || invoices.length === 0) return;
 
-    // Subida secuencial para no saturar (y mantener control)
     for (const inv of invoices) {
       if (!inv?.id) continue;
       await store.saveInvoice(uid, inv, { issuerId: opts?.issuerId });
     }
 
-    // Limpia legacy para no re-migrar
     localStorage.removeItem(STORAGE_KEYS.INVOICES);
   },
 
   // -------- Clients (Firestore) --------
 
-  /**
-   * Legacy local (solo para migración/compatibilidad)
-   */
   getClients: (): Client[] => JSON.parse(localStorage.getItem(STORAGE_KEYS.CLIENTS) || '[]'),
 
-  /**
-   * Listado: 1 query por pantalla.
-   * - Si ya está cargado para uid, devuelve caché sin leer.
-   * - `force=true` obliga a recargar.
-   */
-  loadClientsOnce: async (
-    uid: string,
-    opts?: { pageSize?: number; force?: boolean }
-  ): Promise<Client[]> => {
+  loadClientsOnce: async (uid: string, opts?: { pageSize?: number; force?: boolean }): Promise<Client[]> => {
     const pageSize = opts?.pageSize ?? 200;
     const key = clientsKey(uid);
 
@@ -362,12 +360,7 @@ export const store = {
     }
 
     const col = collection(db, 'clients');
-    const q = query(
-      col,
-      where('ownerUid', '==', uid),
-      orderBy('updatedAt', 'desc'),
-      limit(pageSize)
-    );
+    const q = query(col, where('ownerUid', '==', uid), orderBy('updatedAt', 'desc'), limit(pageSize));
 
     const snap = await getDocs(q);
     const ids: string[] = [];
@@ -387,7 +380,6 @@ export const store = {
   },
 
   saveClient: async (uid: string, client: Client) => {
-    // cache local instantánea
     _clientCache.byId.set(client.id, client);
     touchLoadedClientsList(clientsKey(uid), client.id);
 
@@ -405,9 +397,6 @@ export const store = {
     await deleteDoc(ref);
   },
 
-  /**
-   * Migración 1 vez: pasa clients de localStorage a Firestore.
-   */
   migrateLocalClientsToFirestoreOnce: async (uid: string) => {
     const raw = localStorage.getItem(STORAGE_KEYS.CLIENTS);
     if (!raw) return;
@@ -428,6 +417,96 @@ export const store = {
     localStorage.removeItem(STORAGE_KEYS.CLIENTS);
   },
 
+  // -------- Templates (Firestore) --------
+
+  /**
+   * Legacy local (solo para migración/compatibilidad)
+   */
+  getTemplates: (): InvoiceTemplate[] => JSON.parse(localStorage.getItem(STORAGE_KEYS.TEMPLATES) || '[]'),
+
+  /**
+   * Listado: 1 query por pantalla.
+   * - Si ya está cargado para uid, devuelve caché sin leer.
+   * - `force=true` obliga a recargar.
+   */
+  loadTemplatesOnce: async (
+    uid: string,
+    opts?: { pageSize?: number; force?: boolean }
+  ): Promise<InvoiceTemplate[]> => {
+    const pageSize = opts?.pageSize ?? 200;
+    const key = templatesKey(uid);
+
+    if (!opts?.force && _templateCache.loadedByKey.has(key)) {
+      const ids = _templateCache.listIdsByKey.get(key) || [];
+      return ids.map(id => _templateCache.byId.get(id)!).filter(Boolean);
+    }
+
+    const col = collection(db, 'templates');
+    const q = query(
+      col,
+      where('ownerUid', '==', uid),
+      orderBy('updatedAt', 'desc'),
+      limit(pageSize)
+    );
+
+    const snap = await getDocs(q);
+    const ids: string[] = [];
+
+    snap.forEach(d => {
+      const t = fromFirestoreTemplate(d.id, d.data());
+      _templateCache.byId.set(t.id, t);
+      ids.push(t.id);
+    });
+
+    const last = snap.docs.length ? snap.docs[snap.docs.length - 1] : null;
+    _templateCache.lastDocByKey.set(key, last);
+    _templateCache.listIdsByKey.set(key, ids);
+    _templateCache.loadedByKey.add(key);
+
+    return ids.map(id => _templateCache.byId.get(id)!).filter(Boolean);
+  },
+
+  saveTemplate: async (uid: string, tpl: InvoiceTemplate) => {
+    _templateCache.byId.set(tpl.id, tpl);
+    touchLoadedTemplatesList(templatesKey(uid), tpl.id);
+
+    const ref = doc(db, 'templates', tpl.id);
+    await setDoc(ref, toFirestoreTemplate(uid, tpl), { merge: true });
+  },
+
+  deleteTemplate: async (uid: string, id: string) => {
+    _templateCache.byId.delete(id);
+    const key = templatesKey(uid);
+    const ids = _templateCache.listIdsByKey.get(key) || [];
+    if (ids.includes(id)) _templateCache.listIdsByKey.set(key, ids.filter(x => x !== id));
+
+    const ref = doc(db, 'templates', id);
+    await deleteDoc(ref);
+  },
+
+  /**
+   * Migración 1 vez: pasa templates de localStorage a Firestore.
+   */
+  migrateLocalTemplatesToFirestoreOnce: async (uid: string) => {
+    const raw = localStorage.getItem(STORAGE_KEYS.TEMPLATES);
+    if (!raw) return;
+
+    let templates: InvoiceTemplate[] = [];
+    try {
+      templates = JSON.parse(raw) || [];
+    } catch {
+      return;
+    }
+    if (!Array.isArray(templates) || templates.length === 0) return;
+
+    for (const t of templates) {
+      if (!t?.id) continue;
+      await store.saveTemplate(uid, t);
+    }
+
+    localStorage.removeItem(STORAGE_KEYS.TEMPLATES);
+  },
+
   // -------- Settings (LOCAL por ahora) --------
   getSettings: (): AppSettings => {
     const rawStr = localStorage.getItem(STORAGE_KEYS.SETTINGS);
@@ -437,7 +516,6 @@ export const store = {
       const raw = JSON.parse(rawStr);
       const migrated = migrateSettings(raw);
 
-      // Persist migration once to avoid repeated work
       if (JSON.stringify(raw) !== JSON.stringify(migrated)) {
         localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(migrated));
       }
@@ -494,7 +572,6 @@ export const store = {
     const nextActive =
       settings.activeIssuerId === issuerId ? issuers[0]?.id || DEFAULT_ISSUER.id : settings.activeIssuerId;
 
-    // Don't allow empty issuers list (keep at least one)
     const safeIssuers = issuers.length > 0 ? issuers : [DEFAULT_ISSUER];
 
     store.saveSettings({

@@ -11,6 +11,9 @@ interface InvoiceEditorProps {
   invoiceId?: string;
 }
 
+// Cliente = Party + id (para selector y listado)
+type Client = Party & { id: string };
+
 const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const [loading, setLoading] = useState(true);
 
@@ -20,14 +23,14 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const [activeIssuerId, setActiveIssuerId] = useState<string>('');
 
   // Clients Firestore
-  const [clients, setClients] = useState<any[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
 
   const [step, setStep] = useState(1);
   const [lang, setLang] = useState<Language>('ES');
   const [items, setItems] = useState<InvoiceItem[]>([]);
   const [vatRate, setVatRate] = useState(21);
   const [irpfRate, setIrpfRate] = useState(15);
-  const [status, setStatus] = useState<any>('DRAFT');
+  const [status, setStatus] = useState<Invoice['status']>('DRAFT');
   const [selectedClientId, setSelectedClientId] = useState('');
   const [invoiceNumber, setInvoiceNumber] = useState('');
 
@@ -52,8 +55,11 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const settingsRef = (uid: string) => doc(db, 'settings', uid);
 
   const applySettings = (s: AppSettings) => {
-    const list = Array.isArray((s as any).issuers) ? (s as any).issuers : [];
-    const active = typeof (s as any).activeIssuerId === 'string' ? (s as any).activeIssuerId : (list[0]?.id || '');
+    const list = Array.isArray((s as any).issuers) ? ((s as any).issuers as Issuer[]) : [];
+    const active =
+      typeof (s as any).activeIssuerId === 'string'
+        ? ((s as any).activeIssuerId as string)
+        : (list[0]?.id || '');
 
     setSettings(s);
     setIssuers(list);
@@ -62,7 +68,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     // si todavía no hay seleccionado, seteamos el activo
     setSelectedIssuerId(prev => prev || active || (list[0]?.id || ''));
 
-    const activeIssuer = list.find((i: any) => i.id === active) || list[0];
+    const activeIssuer = list.find(i => i.id === active) || list[0];
     if (activeIssuer) {
       setIssuer({
         name: activeIssuer.name,
@@ -71,30 +77,36 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         email: activeIssuer.email
       });
     }
+
+    return { list, active };
   };
 
-  const loadAllOnce = async (uid: string) => {
+  const loadAllOnce = async (uid: string): Promise<{ s: AppSettings; issuersList: Issuer[]; active: string }> => {
     // 1) settings (1 lectura)
     const sSnap = await getDoc(settingsRef(uid));
+
+    let s: AppSettings;
     if (sSnap.exists()) {
       const data = sSnap.data() as any;
-      const remote: AppSettings = {
-        issuers: Array.isArray(data.issuers) ? data.issuers : [],
-        activeIssuerId: typeof data.activeIssuerId === 'string' ? data.activeIssuerId : '',
+      s = {
+        issuers: Array.isArray(data.issuers) ? (data.issuers as Issuer[]) : [],
+        activeIssuerId: typeof data.activeIssuerId === 'string' ? (data.activeIssuerId as string) : '',
         defaultCurrency: data.defaultCurrency || 'EUR',
         nextInvoiceNumber: data.nextInvoiceNumber || 1,
         yearCounter: data.yearCounter || { [new Date().getFullYear()]: 1 }
       };
-      applySettings(remote);
     } else {
       // fallback: lo que haya en local (tu store ya migra legacy)
-      const local = store.getSettings();
-      applySettings(local);
+      s = store.getSettings();
     }
+
+    const { list: issuersList, active } = applySettings(s);
 
     // 2) clients (1 query por pantalla, cacheable)
     const cl = await store.loadClientsOnce(uid);
-    setClients(cl as any[]);
+    setClients(cl as Client[]);
+
+    return { s, issuersList, active };
   };
 
   // Load once: settings+clients, luego invoice (si edit)
@@ -110,7 +122,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
       setLoading(true);
       try {
-        await loadAllOnce(uid);
+        const { s, issuersList, active } = await loadAllOnce(uid);
         if (!alive) return;
 
         // EDIT existing
@@ -125,7 +137,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
           setRecipient(inv.recipient);
           setLang(inv.lang);
           setInvoiceNumber(inv.number);
-          setSelectedClientId((inv as any).clientId || '');
+          setSelectedClientId(inv.clientId || '');
 
           // snapshot histórico
           setIssuer(inv.issuer);
@@ -136,7 +148,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
             setSelectedIssuerId(invIssuerId);
           } else {
             // best-effort: mapear por taxId + name
-            const match = issuers.find(i => i.taxId === inv.issuer.taxId && i.name === inv.issuer.name);
+            const match = issuersList.find(i => i.taxId === inv.issuer.taxId && i.name === inv.issuer.name);
             if (match) setSelectedIssuerId(match.id);
           }
 
@@ -144,22 +156,24 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         }
 
         // NEW
-        const s = settings || store.getSettings();
         const year = new Date().getFullYear();
         const current = (s.yearCounter?.[year] || 0) + 1;
 
         setInvoiceNumber(`${year}${current.toString().padStart(4, '0')}`);
-        setItems([{ id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }]);
+        setItems([
+          { id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }
+        ]);
 
-        const activeId = (s as any).activeIssuerId || (s as any).issuers?.[0]?.id || '';
-        const active = (s as any).issuers?.find((x: any) => x.id === activeId) || (s as any).issuers?.[0];
-        if (active) {
-          setSelectedIssuerId(active.id);
+        const activeId = s.activeIssuerId || active || issuersList[0]?.id || '';
+        const activeIssuer = issuersList.find(x => x.id === activeId) || issuersList[0];
+
+        if (activeIssuer) {
+          setSelectedIssuerId(activeIssuer.id);
           setIssuer({
-            name: active.name,
-            taxId: active.taxId,
-            address: active.address,
-            email: active.email
+            name: activeIssuer.name,
+            taxId: activeIssuer.taxId,
+            address: activeIssuer.address,
+            email: activeIssuer.email
           });
         }
       } finally {
@@ -205,14 +219,13 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       return;
     }
 
-    // ✅ Guardamos issuerId en la factura (aunque Invoice type no lo tenga aún)
     const id = invoiceId && invoiceId !== 'new' ? invoiceId : Date.now().toString();
 
-    const newInvoice: any = {
+    // Guardamos issuerId aunque el type Invoice no lo tenga aún (Fase 3)
+    const newInvoice: Invoice & { issuerId?: string | null } = {
       id,
       number: invoiceNumber,
       issuer, // snapshot
-      issuerId: selectedIssuerId || null, // 🔥 FASE 3
       recipient,
       clientId: selectedClientId,
       date: new Date().toISOString(),
@@ -228,10 +241,11 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       total,
       isRecurring: false
     };
+    newInvoice.issuerId = selectedIssuerId || null;
 
     await store.saveInvoice(uid, newInvoice as Invoice, { issuerId: selectedIssuerId });
 
-    // ✅ Incremento yearCounter en Firestore para nuevas facturas
+    // Incremento yearCounter en Firestore para nuevas facturas
     if (invoiceId === 'new') {
       try {
         const sSnap = await getDoc(settingsRef(uid));
@@ -260,12 +274,14 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     setItems([...items, { id: Date.now().toString(), description: '', quantity: 1, unitCost: 0, amount: 0 }]);
   };
 
-  const updateItem = (id: string, field: keyof InvoiceItem, value: any) => {
+  const updateItem = (id: string, field: keyof InvoiceItem, value: string | number) => {
     setItems(items.map(item => {
       if (item.id === id) {
-        const updated: any = { ...item, [field]: value };
+        const updated: InvoiceItem = { ...item, [field]: value as any } as InvoiceItem;
         if (field === 'quantity' || field === 'unitCost') {
-          updated.amount = Number(updated.quantity) * Number(updated.unitCost);
+          const q = Number(field === 'quantity' ? value : updated.quantity);
+          const u = Number(field === 'unitCost' ? value : updated.unitCost);
+          updated.amount = q * u;
         }
         return updated;
       }
@@ -340,10 +356,11 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                     className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
                     value={selectedClientId}
                     onChange={(e) => {
-                      const c = clients.find(cl => (cl as any).id === e.target.value);
+                      const id = e.target.value;
+                      const c = clients.find(cl => cl.id === id);
                       if (c) {
                         setRecipient(c);
-                        setSelectedClientId(e.target.value);
+                        setSelectedClientId(id);
                       } else {
                         setSelectedClientId('');
                       }
@@ -351,7 +368,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                     disabled={loading}
                   >
                     <option value="">Seleccionar de la lista...</option>
-                    {clients.map((c: any) => (
+                    {clients.map((c) => (
                       <option key={c.id} value={c.id}>{c.name}</option>
                     ))}
                   </select>

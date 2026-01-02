@@ -61,7 +61,10 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const [items, setItems] = useState<InvoiceItem[]>([]);
   const [vatRate, setVatRate] = useState(21);
   const [irpfRate, setIrpfRate] = useState(15);
-  const [status, setStatus] = useState<Invoice['status']>('DRAFT');
+
+  // OJO: en tu lista usas ISSUED/PAID/DRAFT/CANCELLED
+  const [status, setStatus] = useState<any>('DRAFT');
+
   const [invoiceNumber, setInvoiceNumber] = useState('');
   const [invoiceDate, setInvoiceDate] = useState(toDateInputValue());
 
@@ -79,10 +82,10 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     email: '-'
   });
 
-  // Para modo “editar existente”: bloquea todo menos estado
+  // para edición existente
   const [loadedInvoice, setLoadedInvoice] = useState<Invoice | null>(null);
 
-  // Print language selector (default ES)
+  // impresión
   const [printLang, setPrintLang] = useState<Language>('ES');
 
   const isExisting = !!invoiceId;
@@ -92,16 +95,15 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const applyTemplateToInvoice = (tpl: Template) => {
     if (!tpl) return;
 
-    setLang((tpl.lang as Language) || 'ES');
-    setVatRate(tpl.vatRate);
-    setIrpfRate(tpl.irpfRate);
+    setLang((tpl as any).lang || 'ES');
+    setVatRate((tpl as any).vatRate ?? 21);
+    setIrpfRate((tpl as any).irpfRate ?? 15);
     setItems(safeItemsFromTemplate(tpl));
 
-    // IMPORTANTE: NO forces status aquí si el usuario ya lo cambió
-    // Si quieres mantener siempre DRAFT al aplicar plantilla, deja esta línea:
+    // NO bloqueamos ni forzamos el estado aquí: el usuario puede cambiarlo
     // setStatus('DRAFT');
 
-    if (tpl.recipient) setRecipient(tpl.recipient);
+    if ((tpl as any).recipient) setRecipient((tpl as any).recipient);
     if ((tpl as any).clientId) setSelectedClientId((tpl as any).clientId);
 
     if ((tpl as any).issuer) setIssuer((tpl as any).issuer);
@@ -113,37 +115,28 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   useEffect(() => {
     let alive = true;
 
-    const loadExistingInvoiceIfNeeded = async (uid: string) => {
+    const loadExistingInvoice = async (uid: string) => {
       if (!invoiceId) return;
 
       try {
-        const loadInvoicesOnce = (store as any).loadInvoicesOnce;
-        if (typeof loadInvoicesOnce !== 'function') {
-          console.error('store.loadInvoicesOnce no existe. Pásame store.ts o dime la ruta Firestore de invoices.');
-          return;
-        }
-        const all = await loadInvoicesOnce(uid);
-        const inv = (all || []).find((x: any) => String(x.id) === String(invoiceId)) as Invoice | undefined;
-        if (!inv) {
-          console.error('No se encontró la factura con id:', invoiceId);
-          return;
-        }
+        const list = await store.loadInvoicesOnce(uid, { force: false });
+        const inv = (list || []).find((x: any) => String(x.id) === String(invoiceId)) as Invoice | undefined;
+        if (!inv) return;
 
         if (!alive) return;
-
         setLoadedInvoice(inv);
 
-        // Cargar todo en UI (pero se bloqueará en render)
-        setLang(inv.lang || 'ES');
-        setItems(inv.items || []);
-        setVatRate(inv.vatRate ?? 21);
-        setIrpfRate(inv.irpfRate ?? 15);
-        setStatus(inv.status || 'DRAFT');
-        setInvoiceNumber(inv.number || '');
-        setInvoiceDate(toDateInputValue(inv.date));
+        setLang((inv as any).lang || 'ES');
+        setItems((inv as any).items || []);
+        setVatRate((inv as any).vatRate ?? 21);
+        setIrpfRate((inv as any).irpfRate ?? 15);
+        setStatus((inv as any).status || 'DRAFT');
 
-        setIssuer(inv.issuer as any);
-        setRecipient(inv.recipient as any);
+        setInvoiceNumber((inv as any).number || '');
+        setInvoiceDate(toDateInputValue((inv as any).date));
+
+        setIssuer((inv as any).issuer || issuer);
+        setRecipient((inv as any).recipient || recipient);
 
         setSelectedClientId((inv as any).clientId || '');
         setSelectedIssuerId((inv as any).issuerId || '');
@@ -171,25 +164,26 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         if (!alive) return;
         setTemplates(tpl as Template[]);
 
-        // EXISTENTE: cargarla y bloquear edición (menos status)
-        await loadExistingInvoiceIfNeeded(uid);
-
-        // NUEVA FACTURA
-        if (!invoiceId) {
-          const storedTplId = localStorage.getItem(LS_NEW_INVOICE_TEMPLATE_ID);
-          if (storedTplId) {
-            const found = (tpl as any[]).find((t: any) => t.id === storedTplId);
-            if (found) {
-              setSelectedTemplateId(found.id);
-              applyTemplateToInvoice(found as Template);
-            }
-            localStorage.removeItem(LS_NEW_INVOICE_TEMPLATE_ID);
-          }
-
-          const year = new Date().getFullYear();
-          const next = (settings.yearCounter?.[year] || 0) + 1;
-          setInvoiceNumber(`${year}${String(next).padStart(4, '0')}`);
+        // EXISTENTE
+        if (invoiceId) {
+          await loadExistingInvoice(uid);
+          return;
         }
+
+        // NUEVA
+        const storedTplId = localStorage.getItem(LS_NEW_INVOICE_TEMPLATE_ID);
+        if (storedTplId) {
+          const found = (tpl as any[]).find((t: any) => t.id === storedTplId);
+          if (found) {
+            setSelectedTemplateId(found.id);
+            applyTemplateToInvoice(found as Template);
+          }
+          localStorage.removeItem(LS_NEW_INVOICE_TEMPLATE_ID);
+        }
+
+        const year = new Date().getFullYear();
+        const next = (settings.yearCounter?.[year] || 0) + 1;
+        setInvoiceNumber(`${year}${String(next).padStart(4, '0')}`);
       } catch (e) {
         console.error('InvoiceEditor load error:', e);
       } finally {
@@ -199,12 +193,8 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
     const unsub = onAuthStateChanged(auth, (u) => {
       if (!alive) return;
-
-      if (u?.uid) {
-        run(u.uid);
-      } else {
-        setLoading(false);
-      }
+      if (u?.uid) run(u.uid);
+      else setLoading(false);
     });
 
     return () => {
@@ -233,7 +223,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     const uid = auth.currentUser?.uid;
     if (!uid) return;
 
-    // ✅ Si es existente: SOLO guardar cambio de estado
+    // ✅ EXISTENTE: solo estado
     if (isExisting) {
       if (!loadedInvoice) return;
       await store.saveInvoice(uid, { ...loadedInvoice, status } as Invoice);
@@ -242,7 +232,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       return;
     }
 
-    // Nueva factura: requiere cliente
+    // ✅ NUEVA: requiere cliente
     if (!selectedClientId) return;
 
     const iso = dateInputToISO(invoiceDate);
@@ -283,16 +273,13 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
   /* ================= print ================= */
 
-  const handlePrint = async () => {
-    // Querías 2 opciones ES/EN y ES por defecto. Usamos el lang de impresión.
+  const handlePrint = () => {
     const prev = lang;
     setLang(printLang);
 
-    // fuerza repaint antes de abrir print
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         window.print();
-        // volver al idioma anterior
         setLang(prev);
       });
     });
@@ -303,11 +290,11 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const t = TRANSLATIONS[lang];
   const tAny = t as any;
 
-  // Antes: bloqueabas todo con plantilla. Ahora:
-  // - si es existente: bloquear todo menos status
-  // - si es nueva y hay plantilla seleccionada: bloquear campos EXCEPTO status (y print)
+  // Reglas de edición:
+  // - EXISTENTE: todo bloqueado menos estado (y print)
+  // - NUEVA + plantilla seleccionada: bloquea campos excepto estado (y print)
   const lockedByTemplate = !!selectedTemplateId && !invoiceId;
-  const canEditFields = !isExisting && !lockedByTemplate; // (status NO depende de esto)
+  const canEditFields = !isExisting && !lockedByTemplate;
 
   const onSelectClient = (id: string) => {
     setSelectedClientId(id);
@@ -330,13 +317,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const addItem = () => {
     setItems((prev) => [
       ...prev,
-      {
-        id: `it_${Date.now()}`,
-        description: '',
-        quantity: 1,
-        unitCost: 0,
-        amount: 0
-      }
+      { id: `it_${Date.now()}`, description: '', quantity: 1, unitCost: 0, amount: 0 }
     ]);
   };
 
@@ -367,7 +348,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         </button>
 
         <div className="flex items-center gap-2">
-          {/* Selector idioma impresión */}
+          {/* Print language */}
           <select
             className="border rounded px-3 py-2"
             value={printLang}
@@ -417,7 +398,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
             className="w-full border rounded px-3 py-2"
             value={selectedTemplateId}
             onChange={(e) => onSelectTemplate(e.target.value)}
-            disabled={isExisting} // en existente no se cambia
+            disabled={isExisting}
           >
             <option value="">—</option>
             {templates.map((x) => (
@@ -533,14 +514,14 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
         <div className="space-y-2">
           <div className="text-sm opacity-70">Estado</div>
-          {/* ✅ Siempre editable (nueva con plantilla y existente) */}
+          {/* ✅ Siempre editable (plantilla y edición existente) */}
           <select
             className="w-full border rounded px-3 py-2"
             value={status}
             onChange={(e) => setStatus(e.target.value as any)}
           >
             <option value="DRAFT">DRAFT</option>
-            <option value="SENT">SENT</option>
+            <option value="ISSUED">ISSUED</option>
             <option value="PAID">PAID</option>
           </select>
         </div>

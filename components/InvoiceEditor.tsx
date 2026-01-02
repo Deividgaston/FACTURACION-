@@ -119,7 +119,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   }, [items, vatRate, irpfRate]);
 
   const printLabels = useMemo(() => {
-    // etiquetas pro (solo para la factura impresa)
     if (lang === 'EN') {
       return {
         invoice: 'INVOICE',
@@ -274,12 +273,15 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     };
   }, [invoiceId]);
 
-  /* ================= auto-print handoff ================= */
+  /* ================= auto-print handoff (desde lista) ================= */
 
   useEffect(() => {
     if (!invoiceId) return;
     if (loading) return;
     if (autoPrintDone) return;
+
+    // ✅ si es existente, esperamos a tener loadedInvoice
+    if (isExisting && !loadedInvoice) return;
 
     const targetId = localStorage.getItem(LS_PRINT_INVOICE_ID);
     if (!targetId) return;
@@ -302,7 +304,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [invoiceId, loading]);
+  }, [invoiceId, loading, loadedInvoice]);
 
   /* ================= save ================= */
 
@@ -324,6 +326,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     const uid = auth.currentUser?.uid;
     if (!uid) return;
 
+    // ✅ EXISTENTE: solo estado
     if (isExisting) {
       if (!loadedInvoice) return;
       await store.saveInvoice(uid, { ...loadedInvoice, status } as Invoice);
@@ -332,6 +335,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       return;
     }
 
+    // ✅ NUEVA: requiere cliente
     if (!selectedClientId) return;
 
     const iso = dateInputToISO(invoiceDate);
@@ -385,6 +389,9 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const t = TRANSLATIONS[lang];
   const tAny = t as any;
 
+  // Reglas de edición:
+  // - EXISTENTE: todo bloqueado menos estado (y print)
+  // - NUEVA + plantilla seleccionada: bloquea campos excepto estado (y print)
   const lockedByTemplate = !!selectedTemplateId && !invoiceId;
   const canEditFields = !isExisting && !lockedByTemplate;
 
@@ -479,10 +486,10 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
               <div className="print-muted" style={{ fontSize: 12, maxWidth: 280 }}>
                 {printLabels.address}:{' '}
                 {[
-                  issuer?.address?.street,
-                  issuer?.address?.zip,
-                  issuer?.address?.city,
-                  issuer?.address?.country
+                  (issuer as any)?.address?.street,
+                  (issuer as any)?.address?.zip,
+                  (issuer as any)?.address?.city,
+                  (issuer as any)?.address?.country
                 ]
                   .filter(Boolean)
                   .join(', ') || '—'}
@@ -503,10 +510,10 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
               <div className="print-muted" style={{ fontSize: 12 }}>
                 {printLabels.address}:{' '}
                 {[
-                  recipient?.address?.street,
-                  recipient?.address?.zip,
-                  recipient?.address?.city,
-                  recipient?.address?.country
+                  (recipient as any)?.address?.street,
+                  (recipient as any)?.address?.zip,
+                  (recipient as any)?.address?.city,
+                  (recipient as any)?.address?.country
                 ]
                   .filter(Boolean)
                   .join(', ') || '—'}
@@ -563,7 +570,15 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                 </div>
                 <div style={{ fontWeight: 700 }}>- {fmtMoney(totals.irpfAmount)} €</div>
               </div>
-              <div style={{ borderTop: '1px solid #e5e7eb', marginTop: 10, paddingTop: 10, display: 'flex', justifyContent: 'space-between' }}>
+              <div
+                style={{
+                  borderTop: '1px solid #e5e7eb',
+                  marginTop: 10,
+                  paddingTop: 10,
+                  display: 'flex',
+                  justifyContent: 'space-between'
+                }}
+              >
                 <div style={{ fontWeight: 900, fontSize: 14 }}>{printLabels.total}</div>
                 <div style={{ fontWeight: 900, fontSize: 14 }}>{fmtMoney(totals.total)} €</div>
               </div>
@@ -571,7 +586,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
           </div>
 
           <div className="print-muted" style={{ marginTop: 14, fontSize: 11 }}>
-            {/* Puedes añadir texto legal / IBAN aquí si lo tienes en settings */}
+            {/* Aquí luego metemos IBAN / condiciones / notas */}
           </div>
         </div>
       </div>
@@ -588,11 +603,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
             <div className="flex items-center gap-2">
               {/* Print language */}
-              <select
-                className="border rounded px-3 py-2"
-                value={printLang}
-                onChange={(e) => setPrintLang(e.target.value as Language)}
-              >
+              <select className="border rounded px-3 py-2" value={printLang} onChange={(e) => setPrintLang(e.target.value as Language)}>
                 <option value="ES">ES</option>
                 <option value="EN">EN</option>
               </select>
@@ -687,11 +698,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
           <div className="border rounded">
             <div className="flex items-center justify-between p-3 border-b">
               <div className="font-medium">Líneas</div>
-              <button
-                className="flex items-center gap-2 px-3 py-2 border rounded"
-                onClick={addItem}
-                disabled={!canEditFields}
-              >
+              <button className="flex items-center gap-2 px-3 py-2 border rounded" onClick={addItem} disabled={!canEditFields}>
                 <Plus size={18} />
                 Añadir línea
               </button>
@@ -765,9 +772,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
             </div>
           </div>
 
-          {!isExisting && !selectedClientId && (
-            <div className="text-sm text-red-600">Selecciona un cliente para poder guardar.</div>
-          )}
+          {!isExisting && !selectedClientId && <div className="text-sm text-red-600">Selecciona un cliente para poder guardar.</div>}
         </div>
       </div>
     </>

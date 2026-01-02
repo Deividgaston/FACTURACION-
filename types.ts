@@ -58,7 +58,7 @@ export interface InvoiceTemplate {
   issuerId?: string | null;
 
   recipient?: Party;
-  clientId?: string; // si quieres enlazar con un cliente concreto
+  clientId?: string | null; // ✅ permitir null si alguna plantilla no fija cliente
 
   // ✅ NUEVO: líneas completas (con id) para aplicarlas tal cual en InvoiceEditor
   items?: InvoiceItem[];
@@ -67,12 +67,12 @@ export interface InvoiceTemplate {
   defaultItems?: Omit<InvoiceItem, 'id'>[];
 
   vatRate: number;
-  irpfRate: number; // For withholding (negative)
+  irpfRate: number;
 
-  // ✅ Normalizado
+  // ✅ Canon
   isRecurring: boolean;
 
-  // ✅ Compat UI actual
+  // ✅ Compat UI antigua (si existe, es lo mismo)
   recurring?: boolean;
 
   notes?: string;
@@ -91,7 +91,7 @@ export interface Invoice {
   issuerId?: string | null;      // emisor seleccionado
 
   recipient: Party;              // snapshot (normalmente proviene de Client)
-  clientId: string;
+  clientId: string;              // (en tu flujo actual es obligatorio)
 
   templateId?: string | null;
 
@@ -116,7 +116,6 @@ export interface Invoice {
 }
 
 export interface AppSettings {
-  // New multi-issuer support
   issuers: Issuer[];
   activeIssuerId: string;
 

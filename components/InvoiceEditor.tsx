@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ChevronLeft, Save, CheckCircle, Printer, Plus } from 'lucide-react';
-import { Invoice, InvoiceItem, Party, Language, Issuer, AppSettings } from '../types';
+import { Invoice, InvoiceItem, Party, Language, Issuer, AppSettings, InvoiceTemplate } from '../types';
 import { TRANSLATIONS } from '../constants';
 import { store } from '../lib/store';
 import { auth, db } from '../lib/firebase';
@@ -15,8 +15,8 @@ interface InvoiceEditorProps {
 // Cliente = Party + id (para selector y listado)
 type Client = Party & { id: string };
 
-// Template (sin forzar types): usamos any para no romper tu types.ts ahora
-type Template = any & { id: string; name?: string };
+// Template con id
+type Template = InvoiceTemplate & { id: string };
 
 const isFilled = (v: any) => {
   const s = String(v ?? '').trim();
@@ -28,6 +28,19 @@ const isFilled = (v: any) => {
 const isAddressComplete = (p?: Party | null) => {
   const a = p?.address as any;
   return !!a && isFilled(a.street) && isFilled(a.city) && isFilled(a.zip) && isFilled(a.country);
+};
+
+const safeItemsFromTemplate = (tpl: any): InvoiceItem[] => {
+  const arr = Array.isArray(tpl?.items) ? tpl.items : [];
+  // Garantiza ids y amounts coherentes
+  return arr.map((it: any, idx: number) => {
+    const id = String(it?.id || `tpl_${idx}_${Date.now().toString()}`);
+    const description = String(it?.description ?? '').trim();
+    const quantity = Number(it?.quantity ?? 1);
+    const unitCost = Number(it?.unitCost ?? 0);
+    const amount = Number.isFinite(Number(it?.amount)) ? Number(it.amount) : quantity * unitCost;
+    return { id, description, quantity, unitCost, amount } as InvoiceItem;
+  });
 };
 
 const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
@@ -43,7 +56,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
   // Templates Firestore
   const [templates, setTemplates] = useState<Template[]>([]);
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>(''); // solo para NEW
 
   const [step, setStep] = useState(1);
   const [lang, setLang] = useState<Language>('ES');
@@ -101,29 +114,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     return { list, active };
   };
 
-  const applyTemplateToEditor = (tpl: Template) => {
-    if (!tpl) return;
-
-    // idioma
-    if (tpl.lang === 'ES' || tpl.lang === 'EN') setLang(tpl.lang);
-
-    // impuestos
-    if (typeof tpl.vatRate === 'number') setVatRate(tpl.vatRate);
-    if (typeof tpl.irpfRate === 'number') setIrpfRate(tpl.irpfRate);
-
-    // líneas
-    if (Array.isArray(tpl.items) && tpl.items.length) {
-      const mapped: InvoiceItem[] = tpl.items.map((it: any, idx: number) => ({
-        id: String(it.id || `tpl_${idx}_${Date.now()}`),
-        description: String(it.description ?? ''),
-        quantity: Number(it.quantity ?? 1),
-        unitCost: Number(it.unitCost ?? 0),
-        amount: Number(it.amount ?? (Number(it.quantity ?? 1) * Number(it.unitCost ?? 0)))
-      }));
-      setItems(mapped);
-    }
-  };
-
   const loadAllOnce = async (
     uid: string
   ): Promise<{ s: AppSettings; issuersList: Issuer[]; active: string }> => {
@@ -141,7 +131,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         yearCounter: data.yearCounter || { [new Date().getFullYear()]: 1 }
       };
     } else {
-      // fallback: lo que haya en local (tu store ya migra legacy)
+      // fallback: lo que haya en local
       s = store.getSettings();
     }
 
@@ -152,9 +142,9 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     setClients(cl as Client[]);
 
     // 3) templates (1 query por pantalla, cacheable)
-    //    (si aún no existe en store, fallará en build: asegúrate de haber añadido loadTemplatesOnce/saveTemplate/deleteTemplate/migrateLocalTemplatesToFirestoreOnce)
-    const tplList = await (store as any).loadTemplatesOnce(uid);
-    setTemplates((Array.isArray(tplList) ? tplList : []) as Template[]);
+    await store.migrateLocalTemplatesToFirestoreOnce(uid);
+    const tpl = await store.loadTemplatesOnce(uid);
+    setTemplates((Array.isArray(tpl) ? (tpl as any[]) : []) as Template[]);
 
     return { s, issuersList, active };
   };
@@ -177,14 +167,39 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canIssue]);
 
-  // ✅ FIX CLAVE: esperar a Auth
+  const applyTemplateToInvoice = (tpl: Template | null) => {
+    if (!tpl) return;
+
+    // idioma
+    if (tpl.lang === 'EN' || tpl.lang === 'ES') setLang(tpl.lang as Language);
+
+    // items
+    const tplItems = safeItemsFromTemplate(tpl as any);
+    if (tplItems.length) {
+      setItems(tplItems);
+    } else {
+      // si la plantilla no tiene líneas, mantenemos una por defecto
+      setItems([{ id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }]);
+    }
+
+    // impuestos
+    const vr = Number((tpl as any).vatRate);
+    const ir = Number((tpl as any).irpfRate);
+    if (Number.isFinite(vr)) setVatRate(vr);
+    if (Number.isFinite(ir)) setIrpfRate(ir);
+
+    // estado: siempre DRAFT al aplicar plantilla
+    setStatus('DRAFT');
+  };
+
+  // ✅ Esperar a Auth
   useEffect(() => {
     let alive = true;
     let ranForUid: string | null = null;
 
     const runWithUid = async (uid: string) => {
       if (!alive) return;
-      if (ranForUid === uid) return; // evita dobles cargas
+      if (ranForUid === uid) return;
       ranForUid = uid;
 
       setLoading(true);
@@ -209,6 +224,9 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
           // snapshot histórico
           setIssuer((inv as any).issuer);
 
+          // templateId histórico (solo para mostrarlo si quieres)
+          setSelectedTemplateId((inv as any).templateId || '');
+
           // issuerId guardado en factura
           const invIssuerId = (inv as any).issuerId as string | undefined;
           if (invIssuerId) {
@@ -220,9 +238,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
             if (match) setSelectedIssuerId(match.id);
           }
 
-          // plantilla (solo para mostrar selección si existiera, no aplicamos cambios)
-          setSelectedTemplateId((inv as any).templateId || '');
-
           return;
         }
 
@@ -232,8 +247,12 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
         setInvoiceNumber(`${year}${current.toString().padStart(4, '0')}`);
 
-        // por defecto, líneas base (si no eliges plantilla)
+        // defaults
         setItems([{ id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }]);
+        setVatRate(21);
+        setIrpfRate(15);
+        setLang('ES');
+        setStatus('DRAFT');
 
         const activeId = s.activeIssuerId || active || issuersList[0]?.id || '';
         const activeIssuer = issuersList.find((x) => x.id === activeId) || issuersList[0];
@@ -248,7 +267,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
           });
         }
 
-        // resetea plantilla al crear nueva
+        // plantilla por defecto: ninguna
         setSelectedTemplateId('');
       } finally {
         if (alive) setLoading(false);
@@ -292,18 +311,18 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const handleTemplateChange = (tplId: string) => {
     setSelectedTemplateId(tplId);
 
-    // “Sin plantilla”
     if (!tplId) {
-      // vuelve a defaults mínimos sin tocar cliente/emisor/número
-      setLang('ES');
+      // “Sin plantilla” -> no tocamos cliente/emisor. Restauramos solo defaults razonables.
+      setItems([{ id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }]);
       setVatRate(21);
       setIrpfRate(15);
-      setItems([{ id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }]);
+      setLang('ES');
+      setStatus('DRAFT');
       return;
     }
 
-    const tpl = templates.find((t) => t.id === tplId);
-    if (tpl) applyTemplateToEditor(tpl);
+    const tpl = templates.find((t) => t.id === tplId) || null;
+    applyTemplateToInvoice(tpl);
   };
 
   const handleSave = async () => {
@@ -335,7 +354,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       issuerId: selectedIssuerId || null,
       recipient,
       clientId: selectedClientId,
-      templateId: selectedTemplateId || null, // ✅ guardamos qué plantilla se usó (si alguna)
+      templateId: invoiceId ? ((newInvoice as any)?.templateId || selectedTemplateId || null) : (selectedTemplateId || null),
       date: new Date().toISOString(),
       dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
       status,
@@ -403,6 +422,8 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
   const t = TRANSLATIONS[lang];
 
+  const isNew = !invoiceId || invoiceId === 'new';
+
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       {/* Estilos de Impresión */}
@@ -455,7 +476,9 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
             >
               {step > s ? <CheckCircle size={16} /> : s}
             </div>
-            <span className={`text-sm font-semibold ${step === s ? 'text-slate-800' : 'text-slate-400'}`}>
+            <span
+              className={`text-sm font-semibold ${step === s ? 'text-slate-800' : 'text-slate-400'}`}
+            >
               {s === 1 ? 'Cliente' : s === 2 ? 'Líneas' : s === 3 ? 'Impuestos' : 'Revisión'}
             </span>
             {s < 4 && <div className="w-12 h-px bg-slate-100 mx-2"></div>}
@@ -476,7 +499,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
               )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* Cliente */}
+                {/* Client */}
                 <div className="space-y-2">
                   <label className="text-sm font-semibold text-slate-600">Cliente</label>
                   <select
@@ -509,7 +532,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   )}
                 </div>
 
-                {/* Nº Factura */}
+                {/* Invoice number */}
                 <div className="space-y-2">
                   <label className="text-sm font-semibold text-slate-600">Nº Factura</label>
                   <input
@@ -520,29 +543,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   />
                 </div>
 
-                {/* Plantilla (opcional) */}
-                <div className="space-y-2 md:col-span-2">
-                  <label className="text-sm font-semibold text-slate-600">Plantilla (opcional)</label>
-                  <select
-                    className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
-                    value={selectedTemplateId}
-                    onChange={(e) => handleTemplateChange(e.target.value)}
-                    disabled={loading || (templates?.length ?? 0) === 0}
-                  >
-                    <option value="">Sin plantilla</option>
-                    {templates.map((tpl) => (
-                      <option key={tpl.id} value={tpl.id}>
-                        {tpl.name || `Plantilla ${tpl.id}`}
-                      </option>
-                    ))}
-                  </select>
-
-                  {!loading && templates.length === 0 && (
-                    <p className="text-xs text-slate-400">No tienes plantillas todavía.</p>
-                  )}
-                </div>
-
-                {/* Emisor */}
+                {/* Issuer */}
                 <div className="space-y-2 md:col-span-2">
                   <label className="text-sm font-semibold text-slate-600">Emisor</label>
                   <select
@@ -558,6 +559,30 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                     ))}
                   </select>
                 </div>
+
+                {/* Template (solo NEW) */}
+                {isNew && (
+                  <div className="space-y-2 md:col-span-2">
+                    <label className="text-sm font-semibold text-slate-600">Plantilla (opcional)</label>
+                    <select
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
+                      value={selectedTemplateId}
+                      onChange={(e) => handleTemplateChange(e.target.value)}
+                      disabled={loading}
+                    >
+                      <option value="">Sin plantilla</option>
+                      {templates.map((tpl) => (
+                        <option key={tpl.id} value={tpl.id}>
+                          {(tpl as any).name || `Plantilla ${tpl.id}`}
+                        </option>
+                      ))}
+                    </select>
+
+                    {!loading && templates.length === 0 && (
+                      <p className="text-xs text-slate-400">No hay plantillas aún.</p>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="p-6 bg-slate-50 rounded-2xl border border-dashed border-slate-300">

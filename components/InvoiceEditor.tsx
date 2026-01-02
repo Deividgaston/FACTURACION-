@@ -4,6 +4,7 @@ import { Invoice, InvoiceItem, Party, Language, Issuer, AppSettings } from '../t
 import { TRANSLATIONS } from '../constants';
 import { store } from '../lib/store';
 import { auth, db } from '../lib/firebase';
+import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 
 interface InvoiceEditorProps {
@@ -78,9 +79,9 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     setActiveIssuerId(active);
 
     // si todavía no hay seleccionado, seteamos el activo
-    setSelectedIssuerId(prev => prev || active || (list[0]?.id || ''));
+    setSelectedIssuerId((prev) => prev || active || (list[0]?.id || ''));
 
-    const activeIssuer = list.find(i => i.id === active) || list[0];
+    const activeIssuer = list.find((i) => i.id === active) || list[0];
     if (activeIssuer) {
       setIssuer({
         name: activeIssuer.name,
@@ -135,22 +136,21 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       ? 'Falta la dirección completa del CLIENTE (calle, ciudad, CP, país).'
       : '';
 
-  // ✅ FIX mínimo: si faltan direcciones, no permitimos mantener ISSUED/PAID (evita “bloqueo” de guardado)
+  // ✅ FIX mínimo: si faltan direcciones, no permitimos mantener ISSUED/PAID
   useEffect(() => {
     if (!canIssue && status !== 'DRAFT') setStatus('DRAFT');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canIssue]);
 
-  // Load once: settings+clients, luego invoice (si edit)
+  // ✅ FIX CLAVE: esperar a Auth (si currentUser tarda, antes no cargabas clientes y ya no reintentabas)
   useEffect(() => {
     let alive = true;
+    let ranForUid: string | null = null;
 
-    const run = async () => {
-      const uid = auth.currentUser?.uid;
-      if (!uid) {
-        setLoading(false);
-        return;
-      }
+    const runWithUid = async (uid: string) => {
+      if (!alive) return;
+      if (ranForUid === uid) return; // evita dobles cargas
+      ranForUid = uid;
 
       setLoading(true);
       try {
@@ -174,12 +174,14 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
           // snapshot histórico
           setIssuer((inv as any).issuer);
 
-          // issuerId guardado en factura (FASE 3)
+          // issuerId guardado en factura
           const invIssuerId = (inv as any).issuerId as string | undefined;
           if (invIssuerId) {
             setSelectedIssuerId(invIssuerId);
           } else {
-            const match = issuersList.find(i => i.taxId === (inv as any).issuer.taxId && i.name === (inv as any).issuer.name);
+            const match = issuersList.find(
+              (i) => i.taxId === (inv as any).issuer.taxId && i.name === (inv as any).issuer.name
+            );
             if (match) setSelectedIssuerId(match.id);
           }
 
@@ -191,10 +193,12 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         const current = (s.yearCounter?.[year] || 0) + 1;
 
         setInvoiceNumber(`${year}${current.toString().padStart(4, '0')}`);
-        setItems([{ id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }]);
+        setItems([
+          { id: '1', description: 'Servicios Profesionales', quantity: 1, unitCost: 0, amount: 0 }
+        ]);
 
         const activeId = s.activeIssuerId || active || issuersList[0]?.id || '';
-        const activeIssuer = issuersList.find(x => x.id === activeId) || issuersList[0];
+        const activeIssuer = issuersList.find((x) => x.id === activeId) || issuersList[0];
 
         if (activeIssuer) {
           setSelectedIssuerId(activeIssuer.id);
@@ -210,9 +214,22 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       }
     };
 
-    run();
+    // pinta algo mientras Auth decide
+    setLoading(true);
+
+    const unsub = onAuthStateChanged(auth, (user) => {
+      if (!alive) return;
+      if (!user?.uid) {
+        setClients([]);
+        setLoading(false);
+        return;
+      }
+      runWithUid(user.uid);
+    });
+
     return () => {
       alive = false;
+      unsub();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [invoiceId]);
@@ -220,7 +237,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   // When user changes issuer in UI, update snapshot
   const handleIssuerChange = (issuerId: string) => {
     setSelectedIssuerId(issuerId);
-    const iss = issuers.find(i => i.id === issuerId);
+    const iss = issuers.find((i) => i.id === issuerId);
     if (iss) {
       setIssuer({
         name: iss.name,
@@ -253,7 +270,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
     const id = invoiceId && invoiceId !== 'new' ? invoiceId : Date.now().toString();
 
-    // Guardamos issuerId aunque el type Invoice no lo tenga aún (FASE 3)
     const newInvoice: any = {
       id,
       number: invoiceNumber,
@@ -303,22 +319,27 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   };
 
   const addItem = () => {
-    setItems([...items, { id: Date.now().toString(), description: '', quantity: 1, unitCost: 0, amount: 0 }]);
+    setItems([
+      ...items,
+      { id: Date.now().toString(), description: '', quantity: 1, unitCost: 0, amount: 0 }
+    ]);
   };
 
   const updateItem = (id: string, field: keyof InvoiceItem, value: string | number) => {
-    setItems(items.map(item => {
-      if (item.id === id) {
-        const updated: InvoiceItem = { ...item, [field]: value as any } as InvoiceItem;
-        if (field === 'quantity' || field === 'unitCost') {
-          const q = Number(field === 'quantity' ? value : updated.quantity);
-          const u = Number(field === 'unitCost' ? value : updated.unitCost);
-          updated.amount = q * u;
+    setItems(
+      items.map((item) => {
+        if (item.id === id) {
+          const updated: InvoiceItem = { ...item, [field]: value as any } as InvoiceItem;
+          if (field === 'quantity' || field === 'unitCost') {
+            const q = Number(field === 'quantity' ? value : updated.quantity);
+            const u = Number(field === 'unitCost' ? value : updated.unitCost);
+            updated.amount = q * u;
+          }
+          return updated;
         }
-        return updated;
-      }
-      return item;
-    }));
+        return item;
+      })
+    );
   };
 
   const t = TRANSLATIONS[lang];
@@ -336,7 +357,10 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       `}</style>
 
       <div className="flex items-center justify-between no-print">
-        <button onClick={onBack} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition-colors">
+        <button
+          onClick={onBack}
+          className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition-colors"
+        >
           <ChevronLeft size={20} /> Volver
         </button>
         <div className="flex gap-3">
@@ -359,14 +383,22 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       </div>
 
       <div className="hidden sm:flex items-center justify-between px-8 py-4 bg-white rounded-2xl border border-slate-100 shadow-sm no-print">
-        {[1, 2, 3, 4].map(s => (
+        {[1, 2, 3, 4].map((s) => (
           <div key={s} className="flex items-center gap-3">
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${
-              step === s ? 'bg-indigo-600 text-white' : step > s ? 'bg-indigo-100 text-indigo-600' : 'bg-slate-100 text-slate-400'
-            }`}>
+            <div
+              className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${
+                step === s
+                  ? 'bg-indigo-600 text-white'
+                  : step > s
+                    ? 'bg-indigo-100 text-indigo-600'
+                    : 'bg-slate-100 text-slate-400'
+              }`}
+            >
               {step > s ? <CheckCircle size={16} /> : s}
             </div>
-            <span className={`text-sm font-semibold ${step === s ? 'text-slate-800' : 'text-slate-400'}`}>
+            <span
+              className={`text-sm font-semibold ${step === s ? 'text-slate-800' : 'text-slate-400'}`}
+            >
               {s === 1 ? 'Cliente' : s === 2 ? 'Líneas' : s === 3 ? 'Impuestos' : 'Revisión'}
             </span>
             {s < 4 && <div className="w-12 h-px bg-slate-100 mx-2"></div>}
@@ -396,7 +428,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                     value={selectedClientId}
                     onChange={(e) => {
                       const id = e.target.value;
-                      const c = clients.find(cl => cl.id === id);
+                      const c = clients.find((cl) => cl.id === id);
                       if (c) {
                         setRecipient(c);
                         setSelectedClientId(id);
@@ -408,9 +440,17 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   >
                     <option value="">Seleccionar de la lista...</option>
                     {clients.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
                     ))}
                   </select>
+
+                  {!loading && clients.length === 0 && (
+                    <p className="text-xs text-slate-400">
+                      No hay clientes cargados (o aún no se han leído de Firestore).
+                    </p>
+                  )}
                 </div>
 
                 {/* Invoice number */}
@@ -444,16 +484,21 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
               <div className="p-6 bg-slate-50 rounded-2xl border border-dashed border-slate-300">
                 <h3 className="font-bold text-slate-800">{recipient.name}</h3>
-                <p className="text-sm text-slate-500">{recipient.taxId} | {recipient.email}</p>
                 <p className="text-sm text-slate-500">
-                  {recipient.address.street}, {recipient.address.city} ({recipient.address.zip}), {recipient.address.country}
+                  {recipient.taxId} | {recipient.email}
+                </p>
+                <p className="text-sm text-slate-500">
+                  {recipient.address.street}, {recipient.address.city} ({recipient.address.zip}),{' '}
+                  {recipient.address.country}
                 </p>
 
                 <hr className="my-4 border-slate-200" />
 
                 <p className="text-xs text-slate-400 uppercase font-bold mb-1">Emisor</p>
                 <p className="font-bold text-slate-800">{issuer.name}</p>
-                <p className="text-sm text-slate-500">{issuer.taxId} | {issuer.email}</p>
+                <p className="text-sm text-slate-500">
+                  {issuer.taxId} | {issuer.email}
+                </p>
                 <p className="text-sm text-slate-500">
                   {issuer.address.street}, {issuer.address.city} ({issuer.address.zip}), {issuer.address.country}
                 </p>
@@ -478,7 +523,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                     <div className="col-span-12 md:col-span-6 space-y-1">
                       <input
                         value={item.description}
-                        onChange={e => updateItem(item.id, 'description', e.target.value)}
+                        onChange={(e) => updateItem(item.id, 'description', e.target.value)}
                         placeholder="Descripción del servicio..."
                         className="w-full bg-white px-3 py-2 rounded-lg border border-slate-200 outline-none text-sm"
                       />
@@ -487,7 +532,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                       <input
                         type="number"
                         value={item.quantity}
-                        onChange={e => updateItem(item.id, 'quantity', e.target.value)}
+                        onChange={(e) => updateItem(item.id, 'quantity', e.target.value)}
                         className="w-full bg-white px-3 py-2 rounded-lg border border-slate-200 text-sm"
                       />
                     </div>
@@ -495,7 +540,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                       <input
                         type="number"
                         value={item.unitCost}
-                        onChange={e => updateItem(item.id, 'unitCost', e.target.value)}
+                        onChange={(e) => updateItem(item.id, 'unitCost', e.target.value)}
                         className="w-full bg-white px-3 py-2 rounded-lg border border-slate-200 text-sm"
                       />
                     </div>
@@ -517,7 +562,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   <input
                     type="number"
                     value={vatRate}
-                    onChange={e => setVatRate(Number(e.target.value))}
+                    onChange={(e) => setVatRate(Number(e.target.value))}
                     className="w-20 px-3 py-2 rounded-lg border border-slate-200 text-right outline-none font-bold"
                   />
                 </div>
@@ -526,7 +571,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
                   <input
                     type="number"
                     value={irpfRate}
-                    onChange={e => setIrpfRate(Number(e.target.value))}
+                    onChange={(e) => setIrpfRate(Number(e.target.value))}
                     className="w-20 px-3 py-2 rounded-lg border border-slate-200 text-right outline-none font-bold"
                   />
                 </div>
@@ -543,7 +588,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
             <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
               <h2 className="text-2xl font-bold text-slate-800">Revisión Final</h2>
 
-              {/* Aviso si intentan emitir sin dirección */}
               {!canIssue && (
                 <div className="p-4 rounded-2xl border border-amber-200 bg-amber-50 text-amber-800 text-sm font-semibold">
                   {issueBlockedMsg} Solo podrás guardar como <b>DRAFT</b>.
@@ -641,7 +685,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {items.map(item => (
+            {items.map((item) => (
               <tr key={item.id} className="text-sm">
                 <td className="py-4 font-medium">{item.description}</td>
                 <td className="py-4 text-right">{item.unitCost.toFixed(2)} €</td>
@@ -659,11 +703,15 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
               <span>{subtotal.toFixed(2)} €</span>
             </div>
             <div className="flex justify-between text-sm text-slate-500 uppercase">
-              <span>{t.vat} ({vatRate}%)</span>
+              <span>
+                {t.vat} ({vatRate}%)
+              </span>
               <span>{vatAmount.toFixed(2)} €</span>
             </div>
             <div className="flex justify-between text-sm text-slate-500 uppercase">
-              <span>{t.irpf} (-{irpfRate}%)</span>
+              <span>
+                {t.irpf} (-{irpfRate}%)
+              </span>
               <span>- {irpfAmount.toFixed(2)} €</span>
             </div>
             <div className="flex justify-between pt-4 border-t-2 border-slate-900 font-black text-lg">

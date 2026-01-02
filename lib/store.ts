@@ -93,8 +93,6 @@ function migrateSettings(raw: any): AppSettings {
  * -----------------------------
  *  FASE 2: cache en memoria
  * -----------------------------
- * - 1 query por pantalla (listado): loadInvoicesOnce()
- * - editor: getInvoice() -> 0 lecturas si está; si no, 1 getDoc
  */
 type InvoicesCacheKey = string; // `${uid}::${issuerId||'*'}`
 
@@ -109,7 +107,6 @@ const invoicesKey = (uid: string, issuerId?: string) => `${uid}::${issuerId || '
 
 /**
  * 🔔 listeners locales (NO Firestore listeners)
- * Para refrescar listas en UI sin lecturas extra.
  */
 type InvoicesChangedCb = (payload: { uid: string }) => void;
 const _invoiceListeners = new Set<InvoicesChangedCb>();
@@ -130,15 +127,10 @@ function touchLoadedInvoicesList(key: InvoicesCacheKey, id: string) {
   if (!current.includes(id)) {
     _invoiceCache.listIdsByKey.set(key, [id, ...current]);
   } else {
-    // mover arriba (como “más reciente”)
     _invoiceCache.listIdsByKey.set(key, [id, ...current.filter((x) => x !== id)]);
   }
 }
 
-/**
- * Normaliza la factura para Firestore.
- * Añade metadatos mínimos para reglas de seguridad y ordenación.
- */
 function toFirestoreInvoice(uid: string, invoice: Invoice, issuerId?: string) {
   return {
     ...invoice,
@@ -196,7 +188,7 @@ function touchLoadedClientsList(key: ClientsCacheKey, id: string) {
 
 /**
  * -----------------------------
- *  TEMPLATES: Firestore + cache
+ *  ✅ TEMPLATES: Firestore + cache
  * -----------------------------
  */
 type TemplatesCacheKey = string; // `${uid}`
@@ -210,18 +202,56 @@ const _templateCache = {
 
 const templatesKey = (uid: string) => `${uid}`;
 
+// ✅ TPL NORMALIZE: defaultItems -> items (si hace falta)
+function normalizeTemplateShape(t: any): any {
+  const out: any = { ...(t || {}) };
+
+  // isRecurring / recurring
+  if (typeof out.isRecurring !== 'boolean') out.isRecurring = !!out.recurring;
+  if (typeof out.recurring !== 'boolean') out.recurring = !!out.isRecurring;
+
+  // issuerId / clientId consistentes
+  out.issuerId = typeof out.issuerId === 'string' ? out.issuerId : (out.issuerId === null ? null : null);
+  out.clientId = typeof out.clientId === 'string' ? out.clientId : (out.clientId === null ? null : null);
+
+  // items: si no hay, intenta construir desde defaultItems
+  const hasItems = Array.isArray(out.items) && out.items.length > 0;
+  const hasDefault = Array.isArray(out.defaultItems) && out.defaultItems.length > 0;
+
+  if (!hasItems && hasDefault) {
+    out.items = out.defaultItems.map((it: any, idx: number) => {
+      const description = String(it?.description ?? '').trim();
+      const quantity = Number(it?.quantity ?? 1);
+      const unitCost = Number(it?.unitCost ?? 0);
+      const amount = Number.isFinite(Number(it?.amount)) ? Number(it.amount) : (quantity * unitCost);
+      return {
+        id: String(it?.id || `tpl_${idx}_${Date.now().toString(36)}`),
+        description,
+        quantity: Number.isFinite(quantity) ? quantity : 1,
+        unitCost: Number.isFinite(unitCost) ? unitCost : 0,
+        amount: Number.isFinite(amount) ? amount : 0
+      };
+    });
+  }
+
+  return out;
+}
+
 function toFirestoreTemplate(uid: string, t: InvoiceTemplate) {
+  const normalized = normalizeTemplateShape(t as any);
+
   return {
-    ...t,
+    ...normalized,
     ownerUid: uid,
     updatedAt: serverTimestamp(),
-    createdAt: (t as any).createdAt || serverTimestamp()
+    createdAt: (normalized as any).createdAt || serverTimestamp()
   };
 }
 
 function fromFirestoreTemplate(id: string, data: any): InvoiceTemplate {
   const { ownerUid, updatedAt, createdAt, ...rest } = data || {};
-  return { id, ...rest } as InvoiceTemplate;
+  const normalized = normalizeTemplateShape(rest);
+  return { id, ...normalized } as InvoiceTemplate;
 }
 
 function touchLoadedTemplatesList(key: TemplatesCacheKey, id: string) {
@@ -237,17 +267,11 @@ function touchLoadedTemplatesList(key: TemplatesCacheKey, id: string) {
 export const store = {
   // -------- Invoices (Firestore) --------
 
-  /**
-   * Hook local: la UI puede escuchar cambios SIN Firestore listeners.
-   */
   onInvoicesChanged: (cb: InvoicesChangedCb) => {
     _invoiceListeners.add(cb);
     return () => _invoiceListeners.delete(cb);
   },
 
-  /**
-   * Devuelve la lista cacheada (0 lecturas). Si no hay cache, [].
-   */
   getCachedInvoices: (uid: string, opts?: { issuerId?: string }): Invoice[] => {
     const key = invoicesKey(uid, opts?.issuerId);
     if (!_invoiceCache.loadedByKey.has(key)) return [];
@@ -269,12 +293,7 @@ export const store = {
     }
 
     const col = collection(db, 'invoices');
-    const clauses: any[] = [
-      where('ownerUid', '==', uid),
-      orderBy('updatedAt', 'desc'),
-      limit(pageSize)
-    ];
-
+    const clauses: any[] = [where('ownerUid', '==', uid), orderBy('updatedAt', 'desc'), limit(pageSize)];
     if (issuerId) clauses.unshift(where('issuerId', '==', issuerId));
 
     const q = query(col, ...clauses);
@@ -352,19 +371,12 @@ export const store = {
   },
 
   saveInvoice: async (uid: string, invoice: Invoice, opts?: { issuerId?: string }) => {
-    // cache local instantánea
     _invoiceCache.byId.set(invoice.id, invoice);
 
-    // ✅ actualizar listas cacheadas (sin lecturas extra)
     const effIssuerId = (invoice as any)?.issuerId || opts?.issuerId || undefined;
-
-    // lista por emisor (si existe)
     if (effIssuerId) touchLoadedInvoicesList(invoicesKey(uid, String(effIssuerId)), invoice.id);
-
-    // lista global
     touchLoadedInvoicesList(invoicesKey(uid, undefined), invoice.id);
 
-    // persist
     const ref = doc(db, 'invoices', invoice.id);
     await setDoc(ref, toFirestoreInvoice(uid, invoice, opts?.issuerId), { merge: true });
 
@@ -478,10 +490,7 @@ export const store = {
 
   getTemplates: (): InvoiceTemplate[] => JSON.parse(localStorage.getItem(STORAGE_KEYS.TEMPLATES) || '[]'),
 
-  loadTemplatesOnce: async (
-    uid: string,
-    opts?: { pageSize?: number; force?: boolean }
-  ): Promise<InvoiceTemplate[]> => {
+  loadTemplatesOnce: async (uid: string, opts?: { pageSize?: number; force?: boolean }): Promise<InvoiceTemplate[]> => {
     const pageSize = opts?.pageSize ?? 200;
     const key = templatesKey(uid);
 
@@ -511,11 +520,14 @@ export const store = {
   },
 
   saveTemplate: async (uid: string, tpl: InvoiceTemplate) => {
-    _templateCache.byId.set(tpl.id, tpl);
-    touchLoadedTemplatesList(templatesKey(uid), tpl.id);
+    // ✅ normaliza antes de cachear (evita shapes mezclados en UI)
+    const normalized = normalizeTemplateShape(tpl as any) as InvoiceTemplate;
 
-    const ref = doc(db, 'templates', tpl.id);
-    await setDoc(ref, toFirestoreTemplate(uid, tpl), { merge: true });
+    _templateCache.byId.set(normalized.id, normalized);
+    touchLoadedTemplatesList(templatesKey(uid), normalized.id);
+
+    const ref = doc(db, 'templates', normalized.id);
+    await setDoc(ref, toFirestoreTemplate(uid, normalized), { merge: true });
   },
 
   deleteTemplate: async (uid: string, id: string) => {

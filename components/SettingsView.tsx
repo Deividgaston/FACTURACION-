@@ -51,14 +51,19 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
     setLoading(true);
     setFsError('');
 
+    console.log('⚙️ loadSettingsOnce uid:', uid);
+
     // pinta rápido desde local
     if (!uid) {
-      applySettingsToState(store.getSettings());
+      const local = store.getSettings();
+      console.log('📦 Using LOCAL settings (no uid yet)', local);
+      applySettingsToState(local);
       setLoading(false);
       return;
     }
 
     try {
+      console.log('📡 Reading Firestore settings/', uid);
       const snap = await getDoc(settingsRef(uid));
 
       if (snap.exists()) {
@@ -71,6 +76,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
           yearCounter: data.yearCounter || { [new Date().getFullYear()]: 1 }
         };
 
+        console.log('✅ Firestore settings FOUND', remote);
         store.saveSettings(remote);
         applySettingsToState(remote);
         setFsError('');
@@ -79,12 +85,14 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
 
       // No existe doc -> subimos local a FS
       const local = store.getSettings();
+      console.log('🟡 Firestore settings MISSING -> uploading LOCAL to settings/', uid, local);
       applySettingsToState(local);
 
       await setDoc(settingsRef(uid), { ...local, updatedAt: serverTimestamp() }, { merge: true });
+      console.log('✅ Firestore settings CREATED (from local) at settings/', uid);
       setFsError('');
     } catch (e) {
-      console.error('Settings Firestore load failed:', e);
+      console.error('❌ Settings Firestore load/create failed:', e);
       applySettingsToState(store.getSettings());
       setFsError(formatFsError(e)); // ✅ ahora lo ves
     } finally {
@@ -93,17 +101,26 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
   };
 
   const saveSettingsEverywhere = async (next: AppSettings) => {
+    console.log('💾 saveSettingsEverywhere called', next);
+
     store.saveSettings(next);
     applySettingsToState(next);
 
     const uid = auth.currentUser?.uid;
-    if (!uid) return;
+    console.log('👤 current uid', uid);
+
+    if (!uid) {
+      console.warn('⛔ No UID, no Firestore write');
+      return;
+    }
 
     try {
+      console.log('📡 Writing to Firestore settings/', uid);
       await setDoc(settingsRef(uid), { ...next, updatedAt: serverTimestamp() }, { merge: true });
+      console.log('✅ Firestore write OK');
       setFsError('');
     } catch (e) {
-      console.error('Settings Firestore write failed:', e);
+      console.error('❌ Firestore write FAILED', e);
       setFsError(formatFsError(e)); // ✅ ahora lo ves
     }
   };
@@ -112,6 +129,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
     loadSettingsOnce(null);
 
     const unsub = onAuthStateChanged(auth, (user) => {
+      console.log('🔐 onAuthStateChanged user:', user ? { uid: user.uid, email: user.email } : null);
       loadSettingsOnce(user?.uid || null);
     });
 
@@ -219,9 +237,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
                 <p className="text-sm text-slate-500">
                   {iss.address?.street} · {iss.address?.city} · {iss.address?.zip} · {iss.address?.country}
                 </p>
-                {activeId === iss.id && (
-                  <span className="text-xs text-green-600 font-bold">Emisor activo</span>
-                )}
+                {activeId === iss.id && <span className="text-xs text-green-600 font-bold">Emisor activo</span>}
               </div>
 
               <div className="flex gap-2">
@@ -233,10 +249,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
                     <Check size={14} /> Activar
                   </button>
                 )}
-                <button
-                  onClick={() => setEditing({ ...iss })}
-                  className="px-3 py-2 text-sm bg-slate-200 rounded-xl"
-                >
+                <button onClick={() => setEditing({ ...iss })} className="px-3 py-2 text-sm bg-slate-200 rounded-xl">
                   Editar
                 </button>
                 <button
@@ -298,9 +311,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
                 placeholder="CP *"
                 className="input"
                 value={newIssuer.address.zip}
-                onChange={(e) =>
-                  setNewIssuer({ ...newIssuer, address: { ...newIssuer.address, zip: e.target.value } })
-                }
+                onChange={(e) => setNewIssuer({ ...newIssuer, address: { ...newIssuer.address, zip: e.target.value } })}
               />
               <input
                 placeholder="País *"
@@ -375,9 +386,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
                 placeholder="País *"
                 className="input md:col-span-2"
                 value={editing.address.country}
-                onChange={(e) =>
-                  setEditing({ ...editing, address: { ...editing.address, country: e.target.value } })
-                }
+                onChange={(e) => setEditing({ ...editing, address: { ...editing.address, country: e.target.value } })}
               />
             </div>
 

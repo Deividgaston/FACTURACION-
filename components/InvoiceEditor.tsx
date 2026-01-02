@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { ChevronLeft, Save, Printer, Plus } from 'lucide-react';
 import { Invoice, InvoiceItem, Party, Language, Issuer, AppSettings, InvoiceTemplate } from '../types';
 import { TRANSLATIONS } from '../constants';
@@ -46,6 +46,17 @@ const addDaysISO = (iso: string, days: number) => {
   const d = new Date(iso);
   d.setDate(d.getDate() + days);
   return d.toISOString();
+};
+
+const fmtMoney = (n: any) => (Number(n) || 0).toFixed(2);
+const fmtDate = (isoOrDate: any) => {
+  try {
+    const d = new Date(isoOrDate);
+    if (Number.isNaN(d.getTime())) return String(isoOrDate || '');
+    return d.toLocaleDateString();
+  } catch {
+    return String(isoOrDate || '');
+  }
 };
 
 /* ================= component ================= */
@@ -97,6 +108,62 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   // evita doble print (StrictMode en dev puede ejecutar efectos 2 veces)
   const [autoPrintDone, setAutoPrintDone] = useState(false);
 
+  /* ================= computed totals ================= */
+
+  const totals = useMemo(() => {
+    const subtotal = items.reduce((a, i) => a + (Number((i as any).amount) || 0), 0);
+    const vatAmount = (subtotal * (Number(vatRate) || 0)) / 100;
+    const irpfAmount = (subtotal * (Number(irpfRate) || 0)) / 100;
+    const total = subtotal + vatAmount - irpfAmount;
+    return { subtotal, vatAmount, irpfAmount, total };
+  }, [items, vatRate, irpfRate]);
+
+  const printLabels = useMemo(() => {
+    // etiquetas pro (solo para la factura impresa)
+    if (lang === 'EN') {
+      return {
+        invoice: 'INVOICE',
+        invoiceNo: 'Invoice No.',
+        date: 'Date',
+        dueDate: 'Due date',
+        status: 'Status',
+        issuer: 'Issuer',
+        client: 'Bill To',
+        taxId: 'Tax ID',
+        email: 'Email',
+        address: 'Address',
+        description: 'Description',
+        qty: 'Qty',
+        unit: 'Unit price',
+        amount: 'Amount',
+        subtotal: 'Subtotal',
+        vat: 'VAT',
+        irpf: 'Withholding',
+        total: 'Total'
+      };
+    }
+    return {
+      invoice: 'FACTURA',
+      invoiceNo: 'Nº Factura',
+      date: 'Fecha',
+      dueDate: 'Vencimiento',
+      status: 'Estado',
+      issuer: 'Emisor',
+      client: 'Cliente',
+      taxId: 'NIF/CIF',
+      email: 'Email',
+      address: 'Dirección',
+      description: 'Descripción',
+      qty: 'Ud.',
+      unit: 'Precio',
+      amount: 'Importe',
+      subtotal: 'Subtotal',
+      vat: 'IVA',
+      irpf: 'IRPF',
+      total: 'Total'
+    };
+  }, [lang]);
+
   /* ================= plantilla ================= */
 
   const applyTemplateToInvoice = (tpl: Template) => {
@@ -106,8 +173,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     setVatRate((tpl as any).vatRate ?? 21);
     setIrpfRate((tpl as any).irpfRate ?? 15);
     setItems(safeItemsFromTemplate(tpl));
-
-    // NO bloqueamos ni forzamos el estado aquí: el usuario puede cambiarlo
 
     if ((tpl as any).recipient) setRecipient((tpl as any).recipient);
     if ((tpl as any).clientId) setSelectedClientId((tpl as any).clientId);
@@ -222,14 +287,11 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
     const pl = (localStorage.getItem(LS_PRINT_LANG) || 'ES') as Language;
 
-    // marcar para evitar doble print
     setAutoPrintDone(true);
 
-    // limpiar keys ya
     localStorage.removeItem(LS_PRINT_INVOICE_ID);
     localStorage.removeItem(LS_PRINT_LANG);
 
-    // imprimir con idioma pedido
     const prev = lang;
     setLang(pl);
 
@@ -262,7 +324,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
     const uid = auth.currentUser?.uid;
     if (!uid) return;
 
-    // ✅ EXISTENTE: solo estado
     if (isExisting) {
       if (!loadedInvoice) return;
       await store.saveInvoice(uid, { ...loadedInvoice, status } as Invoice);
@@ -271,15 +332,10 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       return;
     }
 
-    // ✅ NUEVA: requiere cliente
     if (!selectedClientId) return;
 
     const iso = dateInputToISO(invoiceDate);
     const number = await reserveInvoiceNumber(uid, iso);
-
-    const subtotal = items.reduce((a, i) => a + (Number(i.amount) || 0), 0);
-    const vatAmount = (subtotal * vatRate) / 100;
-    const irpfAmount = (subtotal * irpfRate) / 100;
 
     await store.saveInvoice(
       uid,
@@ -296,12 +352,12 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
         status,
         lang,
         items,
-        subtotal,
+        subtotal: totals.subtotal,
         vatRate,
-        vatAmount,
+        vatAmount: totals.vatAmount,
         irpfRate,
-        irpfAmount,
-        total: subtotal + vatAmount - irpfAmount,
+        irpfAmount: totals.irpfAmount,
+        total: totals.total,
         isRecurring: false
       } as Invoice
     );
@@ -329,9 +385,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   const t = TRANSLATIONS[lang];
   const tAny = t as any;
 
-  // Reglas de edición:
-  // - EXISTENTE: todo bloqueado menos estado (y print)
-  // - NUEVA + plantilla seleccionada: bloquea campos excepto estado (y print)
   const lockedByTemplate = !!selectedTemplateId && !invoiceId;
   const canEditFields = !isExisting && !lockedByTemplate;
 
@@ -354,10 +407,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
   };
 
   const addItem = () => {
-    setItems((prev) => [
-      ...prev,
-      { id: `it_${Date.now()}`, description: '', quantity: 1, unitCost: 0, amount: 0 }
-    ]);
+    setItems((prev) => [...prev, { id: `it_${Date.now()}`, description: '', quantity: 1, unitCost: 0, amount: 0 }]);
   };
 
   const updateItem = (id: string, patch: Partial<InvoiceItem>) => {
@@ -365,9 +415,9 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
       prev.map((it) => {
         if (it.id !== id) return it;
         const next = { ...it, ...patch } as InvoiceItem;
-        const q = Number(next.quantity) || 0;
-        const u = Number(next.unitCost) || 0;
-        next.amount = q * u;
+        const q = Number((next as any).quantity) || 0;
+        const u = Number((next as any).unitCost) || 0;
+        (next as any).amount = q * u;
         return next;
       })
     );
@@ -377,197 +427,350 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({ onBack, invoiceId }) => {
 
   if (loading) return <div className="p-6">Cargando…</div>;
 
+  const dueDateISO = addDaysISO(dateInputToISO(invoiceDate), 30);
+
   return (
-    <div className="max-w-4xl mx-auto space-y-6 p-4">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-3">
-        <button className="flex items-center gap-2 text-sm" onClick={onBack}>
-          <ChevronLeft size={18} />
-          {tAny.back || 'Volver'}
-        </button>
+    <>
+      {/* ✅ PRINT CSS: oculta todo menos el layout profesional */}
+      <style>{`
+        @media print {
+          @page { size: A4; margin: 14mm; }
+          html, body { background: #fff !important; }
+          .no-print { display: none !important; }
+          .print-only { display: block !important; }
+          .print-card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px; }
+          .print-muted { color: #6b7280; }
+          .print-table th, .print-table td { padding: 8px 6px; border-bottom: 1px solid #f1f5f9; }
+          .print-table thead th { border-bottom: 1px solid #e5e7eb; }
+        }
+        @media screen {
+          .print-only { display: none; }
+        }
+      `}</style>
 
-        <div className="flex items-center gap-2">
-          {/* Print language */}
-          <select
-            className="border rounded px-3 py-2"
-            value={printLang}
-            onChange={(e) => setPrintLang(e.target.value as Language)}
-          >
-            <option value="ES">ES</option>
-            <option value="EN">EN</option>
-          </select>
-
-          <button className="flex items-center gap-2 px-3 py-2 border rounded" onClick={handlePrint}>
-            <Printer size={18} />
-            {tAny.print || 'Imprimir PDF'}
-          </button>
-
-          <button
-            className="flex items-center gap-2 px-3 py-2 border rounded"
-            onClick={handleSave}
-            disabled={(!selectedClientId && !isExisting) || (isExisting && !loadedInvoice)}
-          >
-            <Save size={18} />
-            {tAny.save || 'Guardar'}
-          </button>
-        </div>
-      </div>
-
-      {/* Basic meta */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="space-y-2">
-          <div className="text-sm opacity-70">Número</div>
-          <input className="w-full border rounded px-3 py-2" value={invoiceNumber} disabled />
-        </div>
-
-        <div className="space-y-2">
-          <div className="text-sm opacity-70">Fecha</div>
-          <input
-            className="w-full border rounded px-3 py-2"
-            type="date"
-            value={invoiceDate}
-            onChange={(e) => setInvoiceDate(e.target.value)}
-            disabled={!canEditFields}
-          />
-        </div>
-
-        <div className="space-y-2">
-          <div className="text-sm opacity-70">Plantilla</div>
-          <select
-            className="w-full border rounded px-3 py-2"
-            value={selectedTemplateId}
-            onChange={(e) => onSelectTemplate(e.target.value)}
-            disabled={isExisting}
-          >
-            <option value="">—</option>
-            {templates.map((x) => (
-              <option key={x.id} value={x.id}>
-                {(x as any).name || x.id}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="space-y-2">
-          <div className="text-sm opacity-70">Emisor</div>
-          <select
-            className="w-full border rounded px-3 py-2"
-            value={selectedIssuerId}
-            onChange={(e) => onSelectIssuer(e.target.value)}
-            disabled={!canEditFields}
-          >
-            <option value="">—</option>
-            {issuers.map((x: any) => (
-              <option key={x.id} value={x.id}>
-                {x.name || x.taxId || x.id}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="space-y-2 md:col-span-2">
-          <div className="text-sm opacity-70">Cliente</div>
-          <select
-            className="w-full border rounded px-3 py-2"
-            value={selectedClientId}
-            onChange={(e) => onSelectClient(e.target.value)}
-            disabled={!canEditFields}
-          >
-            <option value="">—</option>
-            {clients.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name} {c.taxId ? `(${c.taxId})` : ''}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      {/* Items */}
-      <div className="border rounded">
-        <div className="flex items-center justify-between p-3 border-b">
-          <div className="font-medium">Líneas</div>
-          <button
-            className="flex items-center gap-2 px-3 py-2 border rounded"
-            onClick={addItem}
-            disabled={!canEditFields}
-          >
-            <Plus size={18} />
-            Añadir línea
-          </button>
-        </div>
-
-        <div className="p-3 space-y-2">
-          {items.length === 0 ? (
-            <div className="text-sm opacity-70">Sin líneas</div>
-          ) : (
-            items.map((it) => (
-              <div key={it.id} className="grid grid-cols-1 md:grid-cols-6 gap-2 items-center">
-                <input
-                  className="md:col-span-3 border rounded px-3 py-2"
-                  placeholder="Descripción"
-                  value={it.description}
-                  onChange={(e) => updateItem(it.id, { description: e.target.value })}
-                  disabled={!canEditFields}
-                />
-                <input
-                  className="md:col-span-1 border rounded px-3 py-2"
-                  type="number"
-                  value={it.quantity}
-                  onChange={(e) => updateItem(it.id, { quantity: Number(e.target.value) })}
-                  disabled={!canEditFields}
-                />
-                <input
-                  className="md:col-span-1 border rounded px-3 py-2"
-                  type="number"
-                  value={it.unitCost}
-                  onChange={(e) => updateItem(it.id, { unitCost: Number(e.target.value) })}
-                  disabled={!canEditFields}
-                />
-                <input className="md:col-span-1 border rounded px-3 py-2" value={(Number(it.amount) || 0).toFixed(2)} disabled />
+      {/* ✅ Layout PROFESIONAL para PDF */}
+      <div className="print-only">
+        <div className="print-card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16 }}>
+            <div>
+              <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: 0.4 }}>{printLabels.invoice}</div>
+              <div className="print-muted" style={{ marginTop: 6, fontSize: 12 }}>
+                {printLabels.invoiceNo}: <span style={{ fontWeight: 700 }}>{invoiceNumber || '—'}</span>
               </div>
-            ))
+              <div className="print-muted" style={{ fontSize: 12 }}>
+                {printLabels.date}: <span style={{ fontWeight: 600 }}>{fmtDate(dateInputToISO(invoiceDate))}</span>
+              </div>
+              <div className="print-muted" style={{ fontSize: 12 }}>
+                {printLabels.dueDate}: <span style={{ fontWeight: 600 }}>{fmtDate(dueDateISO)}</span>
+              </div>
+              <div className="print-muted" style={{ fontSize: 12 }}>
+                {printLabels.status}: <span style={{ fontWeight: 700 }}>{String(status || 'DRAFT')}</span>
+              </div>
+            </div>
+
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontWeight: 800 }}>{issuer?.name || '—'}</div>
+              <div className="print-muted" style={{ fontSize: 12 }}>
+                {printLabels.taxId}: {issuer?.taxId || '—'}
+              </div>
+              <div className="print-muted" style={{ fontSize: 12 }}>
+                {printLabels.email}: {issuer?.email || '—'}
+              </div>
+              <div className="print-muted" style={{ fontSize: 12, maxWidth: 280 }}>
+                {printLabels.address}:{' '}
+                {[
+                  issuer?.address?.street,
+                  issuer?.address?.zip,
+                  issuer?.address?.city,
+                  issuer?.address?.country
+                ]
+                  .filter(Boolean)
+                  .join(', ') || '—'}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 16, marginTop: 14 }}>
+            <div style={{ flex: 1 }} className="print-card">
+              <div style={{ fontWeight: 800, marginBottom: 6 }}>{printLabels.client}</div>
+              <div style={{ fontWeight: 700 }}>{recipient?.name || '—'}</div>
+              <div className="print-muted" style={{ fontSize: 12 }}>
+                {printLabels.taxId}: {recipient?.taxId || '—'}
+              </div>
+              <div className="print-muted" style={{ fontSize: 12 }}>
+                {printLabels.email}: {recipient?.email || '—'}
+              </div>
+              <div className="print-muted" style={{ fontSize: 12 }}>
+                {printLabels.address}:{' '}
+                {[
+                  recipient?.address?.street,
+                  recipient?.address?.zip,
+                  recipient?.address?.city,
+                  recipient?.address?.country
+                ]
+                  .filter(Boolean)
+                  .join(', ') || '—'}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 14 }}>
+            <table className="print-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'left' }}>{printLabels.description}</th>
+                  <th style={{ textAlign: 'right', width: 70 }}>{printLabels.qty}</th>
+                  <th style={{ textAlign: 'right', width: 110 }}>{printLabels.unit}</th>
+                  <th style={{ textAlign: 'right', width: 110 }}>{printLabels.amount}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(items || []).length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="print-muted" style={{ padding: 10 }}>
+                      —
+                    </td>
+                  </tr>
+                ) : (
+                  (items || []).map((it: any) => (
+                    <tr key={it.id}>
+                      <td>{it.description || '—'}</td>
+                      <td style={{ textAlign: 'right' }}>{Number(it.quantity || 0)}</td>
+                      <td style={{ textAlign: 'right' }}>{fmtMoney(it.unitCost)} €</td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmtMoney(it.amount)} €</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
+            <div style={{ width: 320 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginTop: 6 }}>
+                <div className="print-muted">{printLabels.subtotal}</div>
+                <div style={{ fontWeight: 700 }}>{fmtMoney(totals.subtotal)} €</div>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginTop: 6 }}>
+                <div className="print-muted">
+                  {printLabels.vat} ({Number(vatRate) || 0}%)
+                </div>
+                <div style={{ fontWeight: 700 }}>{fmtMoney(totals.vatAmount)} €</div>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginTop: 6 }}>
+                <div className="print-muted">
+                  {printLabels.irpf} ({Number(irpfRate) || 0}%)
+                </div>
+                <div style={{ fontWeight: 700 }}>- {fmtMoney(totals.irpfAmount)} €</div>
+              </div>
+              <div style={{ borderTop: '1px solid #e5e7eb', marginTop: 10, paddingTop: 10, display: 'flex', justifyContent: 'space-between' }}>
+                <div style={{ fontWeight: 900, fontSize: 14 }}>{printLabels.total}</div>
+                <div style={{ fontWeight: 900, fontSize: 14 }}>{fmtMoney(totals.total)} €</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="print-muted" style={{ marginTop: 14, fontSize: 11 }}>
+            {/* Puedes añadir texto legal / IBAN aquí si lo tienes en settings */}
+          </div>
+        </div>
+      </div>
+
+      {/* ✅ UI NORMAL (pantalla) */}
+      <div className="no-print">
+        <div className="max-w-4xl mx-auto space-y-6 p-4">
+          {/* Header */}
+          <div className="flex items-center justify-between gap-3">
+            <button className="flex items-center gap-2 text-sm" onClick={onBack}>
+              <ChevronLeft size={18} />
+              {tAny.back || 'Volver'}
+            </button>
+
+            <div className="flex items-center gap-2">
+              {/* Print language */}
+              <select
+                className="border rounded px-3 py-2"
+                value={printLang}
+                onChange={(e) => setPrintLang(e.target.value as Language)}
+              >
+                <option value="ES">ES</option>
+                <option value="EN">EN</option>
+              </select>
+
+              <button className="flex items-center gap-2 px-3 py-2 border rounded" onClick={handlePrint}>
+                <Printer size={18} />
+                {tAny.print || 'Imprimir PDF'}
+              </button>
+
+              <button
+                className="flex items-center gap-2 px-3 py-2 border rounded"
+                onClick={handleSave}
+                disabled={(!selectedClientId && !isExisting) || (isExisting && !loadedInvoice)}
+              >
+                <Save size={18} />
+                {tAny.save || 'Guardar'}
+              </button>
+            </div>
+          </div>
+
+          {/* Basic meta */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <div className="text-sm opacity-70">Número</div>
+              <input className="w-full border rounded px-3 py-2" value={invoiceNumber} disabled />
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-sm opacity-70">Fecha</div>
+              <input
+                className="w-full border rounded px-3 py-2"
+                type="date"
+                value={invoiceDate}
+                onChange={(e) => setInvoiceDate(e.target.value)}
+                disabled={!canEditFields}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-sm opacity-70">Plantilla</div>
+              <select
+                className="w-full border rounded px-3 py-2"
+                value={selectedTemplateId}
+                onChange={(e) => onSelectTemplate(e.target.value)}
+                disabled={isExisting}
+              >
+                <option value="">—</option>
+                {templates.map((x) => (
+                  <option key={x.id} value={x.id}>
+                    {(x as any).name || x.id}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-sm opacity-70">Emisor</div>
+              <select
+                className="w-full border rounded px-3 py-2"
+                value={selectedIssuerId}
+                onChange={(e) => onSelectIssuer(e.target.value)}
+                disabled={!canEditFields}
+              >
+                <option value="">—</option>
+                {issuers.map((x: any) => (
+                  <option key={x.id} value={x.id}>
+                    {x.name || x.taxId || x.id}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-2 md:col-span-2">
+              <div className="text-sm opacity-70">Cliente</div>
+              <select
+                className="w-full border rounded px-3 py-2"
+                value={selectedClientId}
+                onChange={(e) => onSelectClient(e.target.value)}
+                disabled={!canEditFields}
+              >
+                <option value="">—</option>
+                {clients.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} {c.taxId ? `(${c.taxId})` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Items */}
+          <div className="border rounded">
+            <div className="flex items-center justify-between p-3 border-b">
+              <div className="font-medium">Líneas</div>
+              <button
+                className="flex items-center gap-2 px-3 py-2 border rounded"
+                onClick={addItem}
+                disabled={!canEditFields}
+              >
+                <Plus size={18} />
+                Añadir línea
+              </button>
+            </div>
+
+            <div className="p-3 space-y-2">
+              {items.length === 0 ? (
+                <div className="text-sm opacity-70">Sin líneas</div>
+              ) : (
+                items.map((it) => (
+                  <div key={it.id} className="grid grid-cols-1 md:grid-cols-6 gap-2 items-center">
+                    <input
+                      className="md:col-span-3 border rounded px-3 py-2"
+                      placeholder="Descripción"
+                      value={it.description}
+                      onChange={(e) => updateItem(it.id, { description: e.target.value })}
+                      disabled={!canEditFields}
+                    />
+                    <input
+                      className="md:col-span-1 border rounded px-3 py-2"
+                      type="number"
+                      value={it.quantity}
+                      onChange={(e) => updateItem(it.id, { quantity: Number(e.target.value) })}
+                      disabled={!canEditFields}
+                    />
+                    <input
+                      className="md:col-span-1 border rounded px-3 py-2"
+                      type="number"
+                      value={it.unitCost}
+                      onChange={(e) => updateItem(it.id, { unitCost: Number(e.target.value) })}
+                      disabled={!canEditFields}
+                    />
+                    <input className="md:col-span-1 border rounded px-3 py-2" value={fmtMoney(it.amount)} disabled />
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* Totals + Status */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-2">
+              <div className="text-sm opacity-70">IVA %</div>
+              <input
+                className="w-full border rounded px-3 py-2"
+                type="number"
+                value={vatRate}
+                onChange={(e) => setVatRate(Number(e.target.value))}
+                disabled={!canEditFields}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-sm opacity-70">IRPF %</div>
+              <input
+                className="w-full border rounded px-3 py-2"
+                type="number"
+                value={irpfRate}
+                onChange={(e) => setIrpfRate(Number(e.target.value))}
+                disabled={!canEditFields}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-sm opacity-70">Estado</div>
+              <select className="w-full border rounded px-3 py-2" value={status} onChange={(e) => setStatus(e.target.value as any)}>
+                <option value="DRAFT">DRAFT</option>
+                <option value="ISSUED">ISSUED</option>
+                <option value="PAID">PAID</option>
+              </select>
+            </div>
+          </div>
+
+          {!isExisting && !selectedClientId && (
+            <div className="text-sm text-red-600">Selecciona un cliente para poder guardar.</div>
           )}
         </div>
       </div>
-
-      {/* Totals + Status */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="space-y-2">
-          <div className="text-sm opacity-70">IVA %</div>
-          <input
-            className="w-full border rounded px-3 py-2"
-            type="number"
-            value={vatRate}
-            onChange={(e) => setVatRate(Number(e.target.value))}
-            disabled={!canEditFields}
-          />
-        </div>
-
-        <div className="space-y-2">
-          <div className="text-sm opacity-70">IRPF %</div>
-          <input
-            className="w-full border rounded px-3 py-2"
-            type="number"
-            value={irpfRate}
-            onChange={(e) => setIrpfRate(Number(e.target.value))}
-            disabled={!canEditFields}
-          />
-        </div>
-
-        <div className="space-y-2">
-          <div className="text-sm opacity-70">Estado</div>
-          {/* ✅ Siempre editable (plantilla y edición existente) */}
-          <select className="w-full border rounded px-3 py-2" value={status} onChange={(e) => setStatus(e.target.value as any)}>
-            <option value="DRAFT">DRAFT</option>
-            <option value="ISSUED">ISSUED</option>
-            <option value="PAID">PAID</option>
-          </select>
-        </div>
-      </div>
-
-      {!isExisting && !selectedClientId && <div className="text-sm text-red-600">Selecciona un cliente para poder guardar.</div>}
-    </div>
+    </>
   );
 };
 
